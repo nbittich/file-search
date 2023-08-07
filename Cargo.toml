@@ -5,7 +5,7 @@ edition = "2021"
 license = "MPL-2.0"
 authors = ["Nordine Bittich"]
 description = "File indexing and search"
-repository = "https://github.com:nbittich/file-search"
+repository = "https://github.com:nbittich/file-search.git"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
