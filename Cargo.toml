@@ -37,7 +37,7 @@ cargo-dist-version = "0.0.7"
 rust-toolchain-version = "1.71.1"
 # CI backends to support (see 'cargo dist generate-ci')
 ci = ["github"]
-installers = ["shell"]
 # The installers to generate for each app
+installers = ["shell"]
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["x86_64-unknown-linux-gnu"]
