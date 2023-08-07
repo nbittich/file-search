@@ -1,7 +1,13 @@
 use std::{error::Error, path::PathBuf};
 
 use calamine::{open_workbook_auto, DataType, Reader};
-use tantivy::Document;
+use serde::Deserialize;
+use tantivy::{
+    collector::TopDocs,
+    query::{FuzzyTermQuery, Query, QueryParser, RegexQuery, TermQuery},
+    schema::IndexRecordOption,
+    Document, Term,
+};
 
 use crate::index_tantivy::FileSearchIndex;
 
@@ -36,16 +42,18 @@ fn convert_row_column_to_letter(mut row: Row, mut column: Column) -> String {
     res
 }
 
-pub fn index_xlsx_file(
-    file_search_index: &mut FileSearchIndex,
-    path_to_xlsx: &str,
+pub async fn index_xlsx_file(
+    file_search_index: FileSearchIndex,
+    path_to_xlsx: impl Into<PathBuf>,
 ) -> Result<(), Box<dyn Error>> {
-    let path_to_xlsx = PathBuf::from(path_to_xlsx);
+    let path_to_xlsx = path_to_xlsx.into();
     let mut workbook = open_workbook_auto(&path_to_xlsx).expect("Cannot open file");
     let sheets = workbook.sheet_names().to_owned();
 
+    let mut index_writer = file_search_index.index_writer.lock().await;
     for sheet_name in sheets {
         if let Some(Ok(range)) = workbook.worksheet_range(&sheet_name) {
+            tracing::info!("indexing start for sheet {sheet_name}.");
             // extract labels
             let labels = range
                 .rows()
@@ -55,6 +63,9 @@ pub fn index_xlsx_file(
                 .collect::<Vec<String>>();
 
             for (row_idx, row) in range.rows().skip(1).enumerate() {
+                if row.iter().all(|c| c == &DataType::Empty) {
+                    continue;
+                }
                 let mut doc = Document::default();
                 doc.add_text(
                     file_search_index.file_name_field,
@@ -64,9 +75,6 @@ pub fn index_xlsx_file(
                         .to_string_lossy(),
                 );
 
-                if row.iter().all(|c| c == &DataType::Empty) {
-                    continue;
-                }
                 for (column, cell) in row.iter().enumerate() {
                     if &DataType::Empty == cell {
                         continue;
@@ -79,11 +87,13 @@ pub fn index_xlsx_file(
                     doc.add_text(file_search_index.cell_value_field, cell.to_string());
                 }
 
-                file_search_index.index_writer.add_document(doc)?;
+                index_writer.add_document(doc)?;
             }
-            file_search_index.index_writer.commit()?;
+            tracing::info!("indexing done.");
         }
     }
+    index_writer.commit()?;
+
     Ok(())
 }
 
@@ -98,13 +108,15 @@ mod test {
 
     use super::index_xlsx_file;
 
-    #[test]
-    fn test_xlsx() {
+    #[tokio::test]
+    async fn test_xlsx() {
         let mut file_search_index = FileSearchIndex::new(
             &std::env::var("INDEX_DIR_PATH").unwrap_or_else(|_| "/tmp/__tantivy_data".to_string()),
         )
         .unwrap();
-        index_xlsx_file(&mut file_search_index, "test2.xlsx").unwrap();
+        index_xlsx_file(file_search_index, "test2.xlsx")
+            .await
+            .unwrap();
     }
 
     #[test]

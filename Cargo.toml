@@ -3,12 +3,13 @@ name = "file-search"
 version = "0.1.0"
 edition = "2021"
 license = "MPL-2.0"
-license-file = "LICENSE"
 authors = ["Nordine Bittich"]
 description = "File indexing and search"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+axum = { version = "0.6.20", features = ["headers", "tracing"] }
+axum-extra = "0.7.7"
 calamine = { version = "0.21.2", features = ["chrono", "dates"] }
 chrono = "0.4.26"
 csv = "1.2.2"
@@ -16,4 +17,8 @@ serde = { version = "1.0.182", features = ["derive"] }
 serde_json = "1.0.104"
 tantivy = "0.20.2"
 tokio = { version = "1.29.1", features = ["full"] }
+tracing = "0.1.37"
+tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
 uuid = { version = "1.4.1", features = ["v4"] }
+tower = "0.4.13"
+tower-http = { version = "0.4.3", features = ["fs", "trace", "redirect"] }

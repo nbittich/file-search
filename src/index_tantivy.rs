@@ -1,13 +1,27 @@
-use std::{error::Error, path::PathBuf};
+use std::{error::Error, path::PathBuf, sync::Arc};
 
+use serde::Deserialize;
 use tantivy::{
-    schema::{Field, Schema, STORED, STRING, TEXT},
-    Index, IndexReader, IndexWriter, ReloadPolicy,
+    collector::TopDocs,
+    query::{FuzzyTermQuery, Query, QueryParser, RegexQuery, TermQuery},
+    schema::{Field, IndexRecordOption, Schema, STORED, STRING, TEXT},
+    Document, Index, IndexReader, IndexWriter, ReloadPolicy, Term,
 };
+use tokio::sync::Mutex;
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum QueryType {
+    TermQuery,
+    RegexQuery,
+    FuzzySearch,
+    QueryParser,
+}
+
+#[derive(Clone)]
 pub struct FileSearchIndex {
     pub index: Index,
-    pub index_writer: IndexWriter,
+    pub index_writer: Arc<Mutex<IndexWriter>>,
     pub index_reader: IndexReader,
     pub schema: Schema,
     pub cell_position_field: Field,
@@ -38,7 +52,7 @@ impl FileSearchIndex {
             tantivy::directory::MmapDirectory::open(&index_dir)?,
             schema.clone(),
         )?;
-        let index_writer = index.writer(50_000_000)?; // 50mb
+        let index_writer = Arc::new(Mutex::new(index.writer(50_000_000)?)); // 50mb
         let index_reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommit)
@@ -53,5 +67,51 @@ impl FileSearchIndex {
             file_name_field,
             cell_position_field,
         })
+    }
+    pub fn convert_query_type_to_query(
+        &self,
+        q: &str,
+        query_type: &QueryType,
+    ) -> Result<Box<dyn Query>, Box<dyn Error>> {
+        let search_field = self.cell_value_field;
+        let query: Box<dyn Query> = match query_type {
+            QueryType::TermQuery => Box::new(TermQuery::new(
+                Term::from_field_text(search_field, q),
+                IndexRecordOption::Basic,
+            )),
+            QueryType::RegexQuery => Box::new(RegexQuery::from_pattern(
+                &format!("(?i){q}.*"),
+                search_field,
+            )?),
+            QueryType::FuzzySearch => Box::new(FuzzyTermQuery::new(
+                Term::from_field_text(search_field, q),
+                2, // todo lehvenstein distance should be a param
+                true,
+            )),
+            QueryType::QueryParser => {
+                let query_parser = QueryParser::for_index(&self.index, vec![self.cell_value_field]);
+                let query = query_parser.parse_query(q)?;
+                Box::new(query)
+            }
+        };
+        Ok(query)
+    }
+    pub fn search(
+        &self,
+        page: usize,
+        per_page: usize,
+        q: &str,
+        query_type: &QueryType,
+    ) -> Result<Vec<Document>, Box<dyn Error>> {
+        let schema = &self.schema;
+        let query = self.convert_query_type_to_query(q, query_type)?;
+        let searcher = &self.index_reader.searcher();
+        let top_docs = searcher.search(&query, &TopDocs::with_limit(per_page).and_offset(page))?;
+        let mut docs = Vec::with_capacity(top_docs.len());
+        for (_score, doc_address) in top_docs.iter() {
+            let retrieved_doc = searcher.doc(*doc_address)?;
+            docs.push(retrieved_doc);
+        }
+        Ok(docs)
     }
 }
