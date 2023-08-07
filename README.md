@@ -21,9 +21,10 @@ GET http://localhost:8080/search?page=0&per_page=10&q=sango&query_type=regexQuer
 
 ## environment variables:
 
-| env                     | default value                       |
-| SERVICE_COLLECTION_NAME | file-search                         |
-| SERVICE_HOST            | 0.0.0.0                             |
-| SERVICE_PORT            | 8080                                |
-| INDEX_DIR_PATH          | `/tmp/__tantivy_data`               |
-| RUST_LOG                | N/A                                 |
+| **env**                        | **default value**                   |
+| ------------------------------ | ----------------------------------- |
+| SERVICE_COLLECTION_NAME        | file-search                         |
+| SERVICE_HOST                   | 0.0.0.0                             |
+| SERVICE_PORT                   | 8080                                |
+| INDEX_DIR_PATH                 | `/tmp/__tantivy_data`               |
+| RUST_LOG                       | N/A                                 |
