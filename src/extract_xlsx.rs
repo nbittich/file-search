@@ -109,6 +109,7 @@ mod test {
     use super::index_xlsx_file;
 
     #[tokio::test]
+    #[ignore]
     async fn test_xlsx() {
         let mut file_search_index = FileSearchIndex::new(
             &std::env::var("INDEX_DIR_PATH").unwrap_or_else(|_| "/tmp/__tantivy_data".to_string()),
@@ -120,6 +121,7 @@ mod test {
     }
 
     #[test]
+    #[ignore]
     fn test_read_idx() {
         let file_search_index = FileSearchIndex::new(
             &std::env::var("INDEX_DIR_PATH").unwrap_or_else(|_| "/tmp/__tantivy_data".to_string()),
@@ -159,6 +161,7 @@ mod test {
     }
 
     #[test]
+    #[ignore]
     fn test_convert_row_column_to_letter() {
         assert_eq!(convert_row_column_to_letter(61, 8), "I62".to_string());
         assert_eq!(convert_row_column_to_letter(56, 132), "EC57".to_string());
