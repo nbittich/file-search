@@ -54,7 +54,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let addr = SocketAddr::from_str(&format!("{host}:{port}"))?;
     tracing::info!("{app_name} :: listening on {:?}", addr);
     let app = Router::new()
-        //.route("/index", post(create_room))
+        .route("/index", post(post_index))
         .route("/search", get(get_search))
         .layer(
             TraceLayer::new_for_http()
@@ -87,8 +87,8 @@ async fn get_search(
 }
 
 async fn post_index(
-    axum::extract::Json(index_request): axum::extract::Json<IndexRequest>,
     State(fsi): State<FileSearchIndex>,
+    axum::extract::Json(index_request): axum::extract::Json<IndexRequest>,
 ) -> axum::response::Result<impl IntoResponse> {
     let path = PathBuf::from(index_request.file_path);
     match path
