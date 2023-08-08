@@ -28,12 +28,14 @@ pub struct FileSearchIndex {
     pub cell_value_field: Field,
     pub cell_ctx_field: Field,
     pub file_name_field: Field,
+    pub sheet_name_field: Field,
 }
 
 pub static CELL_POSITION_FIELD: &str = "cell_position";
 pub static CELL_CTX_FIELD: &str = "cell_ctx";
 pub static CELL_VALUE_FIELD: &str = "cell_value";
 pub static FILE_NAME_FIELD: &str = "file_name";
+pub static SHEET_NAME_FIELD: &str = "sheet_name";
 
 impl FileSearchIndex {
     pub fn new(path: &str) -> Result<FileSearchIndex, Box<dyn Error>> {
@@ -47,6 +49,7 @@ impl FileSearchIndex {
         let cell_value_field = schema_builder.add_text_field(CELL_VALUE_FIELD, TEXT | STORED);
         let cell_ctx_field = schema_builder.add_text_field(CELL_CTX_FIELD, STRING | STORED);
         let file_name_field = schema_builder.add_text_field(FILE_NAME_FIELD, STRING | STORED);
+        let sheet_name_field = schema_builder.add_text_field(SHEET_NAME_FIELD, STRING | STORED);
         let schema = schema_builder.build();
         let index = Index::open_or_create(
             tantivy::directory::MmapDirectory::open(&index_dir)?,
@@ -65,6 +68,7 @@ impl FileSearchIndex {
             cell_value_field,
             cell_ctx_field,
             file_name_field,
+            sheet_name_field,
             cell_position_field,
         })
     }
@@ -80,7 +84,8 @@ impl FileSearchIndex {
                 IndexRecordOption::Basic,
             )),
             QueryType::RegexQuery => Box::new(RegexQuery::from_pattern(
-                &format!("(?i){q}.*"),
+                // &format!("(?i){q}.*"), // this should be done by the client
+                q,
                 search_field,
             )?),
             QueryType::FuzzySearch => Box::new(FuzzyTermQuery::new(

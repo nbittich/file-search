@@ -74,7 +74,7 @@ pub async fn index_xlsx_file(
                         .ok_or("file not found")?
                         .to_string_lossy(),
                 );
-
+                doc.add_text(file_search_index.sheet_name_field, &sheet_name);
                 for (column, cell) in row.iter().enumerate() {
                     if &DataType::Empty == cell {
                         continue;
