@@ -4,7 +4,7 @@ use serde::Deserialize;
 use tantivy::{
     collector::TopDocs,
     query::{FuzzyTermQuery, Query, QueryParser, RegexQuery, TermQuery},
-    schema::{Field, IndexRecordOption, Schema, STORED, STRING, TEXT},
+    schema::{Field, IndexRecordOption, NamedFieldDocument, Schema, STORED, STRING, TEXT},
     Document, Index, IndexReader, IndexWriter, ReloadPolicy, Term,
 };
 use tokio::sync::Mutex;
@@ -107,7 +107,7 @@ impl FileSearchIndex {
         per_page: usize,
         q: &str,
         query_type: &QueryType,
-    ) -> Result<Vec<Document>, Box<dyn Error>> {
+    ) -> Result<Vec<NamedFieldDocument>, Box<dyn Error>> {
         let schema = &self.schema;
         let query = self.convert_query_type_to_query(q, query_type)?;
         let searcher = &self.index_reader.searcher();
@@ -115,7 +115,7 @@ impl FileSearchIndex {
         let mut docs = Vec::with_capacity(top_docs.len());
         for (_score, doc_address) in top_docs.iter() {
             let retrieved_doc = searcher.doc(*doc_address)?;
-            docs.push(retrieved_doc);
+            docs.push(schema.to_named_doc(&retrieved_doc));
         }
         Ok(docs)
     }
