@@ -45,9 +45,9 @@ fn convert_row_column_to_letter(mut row: Row, mut column: Column) -> String {
 pub async fn index_xlsx_file(
     file_search_index: FileSearchIndex,
     path_to_xlsx: impl Into<PathBuf>,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     let path_to_xlsx = path_to_xlsx.into();
-    let mut workbook = open_workbook_auto(&path_to_xlsx).expect("Cannot open file");
+    let mut workbook = open_workbook_auto(&path_to_xlsx)?;
     let sheets = workbook.sheet_names().to_owned();
 
     let mut index_writer = file_search_index.index_writer.lock().await;

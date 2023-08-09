@@ -98,7 +98,7 @@ async fn post_index(
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?
     {
         "xls" | "xlsx" if path.exists() => {
-            tokio::spawn(async move { extract_xlsx::index_xlsx_file(fsi, path) });
+            tokio::spawn(async move { extract_xlsx::index_xlsx_file(fsi, path).await });
             Ok(StatusCode::ACCEPTED)
         }
         _ => {
