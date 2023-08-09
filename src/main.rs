@@ -91,6 +91,7 @@ async fn post_index(
     axum::extract::Json(index_request): axum::extract::Json<IndexRequest>,
 ) -> axum::response::Result<impl IntoResponse> {
     let path = PathBuf::from(index_request.file_path);
+    tracing::info!("getting path {path:?}");
     match path
         .extension()
         .and_then(|e| e.to_str())
