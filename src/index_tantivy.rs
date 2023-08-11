@@ -111,12 +111,16 @@ impl FileSearchIndex {
         let schema = &self.schema;
         let query = self.convert_query_type_to_query(q, query_type)?;
         let searcher = &self.index_reader.searcher();
-        let top_docs = searcher.search(&query, &TopDocs::with_limit(per_page).and_offset(page))?;
+        let top_docs = searcher.search(
+            &query,
+            &TopDocs::with_limit(per_page).and_offset(page * per_page),
+        )?;
         let mut docs = Vec::with_capacity(top_docs.len());
         for (_score, doc_address) in top_docs.iter() {
             let retrieved_doc = searcher.doc(*doc_address)?;
             docs.push(schema.to_named_doc(&retrieved_doc));
         }
+
         Ok(docs)
     }
 }
