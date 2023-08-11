@@ -146,11 +146,10 @@ async fn index_path(
     path: PathBuf,
     fsi: FileSearchIndex,
 ) -> axum::response::Result<impl IntoResponse> {
-    match path
-        .extension()
-        .and_then(|e| e.to_str())
-        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?
-    {
+    match path.extension().and_then(|e| e.to_str()).ok_or_else(|| {
+        tracing::error!("could not determine extension");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })? {
         "xls" | "xlsx" if path.exists() => {
             tokio::spawn(async move { extract_xlsx::index_xlsx_file(fsi, path).await });
             Ok(StatusCode::ACCEPTED)
