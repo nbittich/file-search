@@ -108,9 +108,9 @@ async fn post_index(
 
 async fn reindex_from_directory(
     State(fsi): State<FileSearchIndex>,
-    Query(reindex): Query<ReindexRequest>,
+    reindex: Query<ReindexRequest>,
 ) -> axum::response::Result<impl IntoResponse> {
-    let path = PathBuf::from(reindex.directory_path);
+    let path = PathBuf::from(&reindex.directory_path);
     if !path.exists() || !path.is_dir() {
         tracing::error!("path {path:?} doesn't exist or is not a directory");
         return Err(ErrorResponse::from(StatusCode::BAD_REQUEST));
