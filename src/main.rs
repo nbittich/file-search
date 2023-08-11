@@ -116,6 +116,18 @@ async fn reindex_from_directory(
         return Err(ErrorResponse::from(StatusCode::BAD_REQUEST));
     }
 
+    let mut index_writer = fsi.index_writer.lock().await;
+
+    index_writer.delete_all_documents().map_err(|e| {
+        tracing::error!("error while deleting all docs: {e:?}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    index_writer.commit().map_err(|e| {
+        tracing::error!("error while committing: {e:?}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
     for file in path.read_dir().map_err(|e| {
         tracing::error!("could not read dir {e:?}");
         return ErrorResponse::from(StatusCode::INTERNAL_SERVER_ERROR);
@@ -126,17 +138,6 @@ async fn reindex_from_directory(
         })?;
         index_path(file.path(), fsi.clone()).await?;
     }
-
-    let mut index_writer = fsi.index_writer.lock().await;
-
-    index_writer.delete_all_documents().map_err(|e| {
-        tracing::error!("error while deleting all docs: {e:?}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-    index_writer.commit().map_err(|e| {
-        tracing::error!("error while committing: {e:?}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
 
     Ok(StatusCode::ACCEPTED)
 }
