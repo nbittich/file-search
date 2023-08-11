@@ -28,3 +28,4 @@ GET http://localhost:8080/search?page=0&per_page=10&q=sango&query_type=regexQuer
 | SERVICE_PORT                   | 8080                                |
 | INDEX_DIR_PATH                 | `/tmp/__tantivy_data`               |
 | RUST_LOG                       | N/A                                 |
+| INDEX_WRITER_SIZE              | 50000000 (50mb)                     |

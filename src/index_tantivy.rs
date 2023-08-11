@@ -38,7 +38,7 @@ pub static FILE_NAME_FIELD: &str = "file_name";
 pub static SHEET_NAME_FIELD: &str = "sheet_name";
 
 impl FileSearchIndex {
-    pub fn new(path: &str) -> Result<FileSearchIndex, Box<dyn Error>> {
+    pub fn new(path: &str, writer_memory_arena: usize) -> Result<FileSearchIndex, Box<dyn Error>> {
         let index_dir = PathBuf::from(path);
         if !index_dir.exists() {
             std::fs::create_dir(index_dir.as_path())?;
@@ -55,7 +55,7 @@ impl FileSearchIndex {
             tantivy::directory::MmapDirectory::open(&index_dir)?,
             schema.clone(),
         )?;
-        let index_writer = Arc::new(Mutex::new(index.writer(50_000_000)?)); // 50mb
+        let index_writer = Arc::new(Mutex::new(index.writer(writer_memory_arena)?)); // 50mb
         let index_reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommit)

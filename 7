@@ -21,7 +21,6 @@ mod index_tantivy;
 pub static CORS_ALLOW_ORIGIN: &str = "CORS_ALLOW_ORIGIN";
 pub static BODY_SIZE_LIMIT: &str = "BODY_SIZE_LIMIT";
 pub static SERVICE_HOST: &str = "SERVICE_HOST";
-pub static INDEX_WRITER_SIZE: &str = "INDEX_WRITER_SIZE";
 pub static SERVICE_PORT: &str = "SERVICE_PORT";
 pub static SERVICE_CONFIG_VOLUME: &str = "SERVICE_CONFIG_VOLUME";
 pub static SERVICE_DATA_VOLUME: &str = "SERVICE_DATA_VOLUME";
@@ -51,21 +50,16 @@ pub struct ReindexRequest {
 async fn main() -> Result<(), Box<dyn Error>> {
     setup_tracing()?;
     let host = var(SERVICE_HOST).unwrap_or_else(|_| String::from("0.0.0.0"));
-    let index_writer_size = var(INDEX_WRITER_SIZE)
-        .unwrap_or_else(|_| String::from("50000000"))
-        .parse::<usize>()?;
     let port = var(SERVICE_PORT).unwrap_or_else(|_| String::from("8080"));
     let app_name = var(SERVICE_APPLICATION_NAME).unwrap_or_else(|_| String::from("file-search"));
     let file_search_index = FileSearchIndex::new(
         &var(INDEX_DIR_PATH).unwrap_or_else(|_| "/tmp/__tantivy_data".to_string()),
-        index_writer_size,
     )?;
 
     let addr = SocketAddr::from_str(&format!("{host}:{port}"))?;
     tracing::info!("{app_name} :: listening on {:?}", addr);
     let app = Router::new()
         .route("/index", post(post_index))
-        .route("/reindex", post(reindex_from_directory))
         .route("/search", get(get_search))
         .layer(
             TraceLayer::new_for_http()
@@ -112,19 +106,8 @@ async fn reindex_from_directory(
 ) -> axum::response::Result<impl IntoResponse> {
     let path = PathBuf::from(reindex.directory_path);
     if !path.exists() || !path.is_dir() {
-        tracing::error!("path {path:?} doesn't exist or is not a directory");
+        tracing::error!("path {path:?} doesn't exist");
         return Err(ErrorResponse::from(StatusCode::BAD_REQUEST));
-    }
-
-    for file in path.read_dir().map_err(|e| {
-        tracing::error!("could not read dir {e:?}");
-        return ErrorResponse::from(StatusCode::INTERNAL_SERVER_ERROR);
-    })? {
-        let file = file.map_err(|e| {
-            tracing::error!("could not read file {e:?}");
-            return ErrorResponse::from(StatusCode::INTERNAL_SERVER_ERROR);
-        })?;
-        index_path(file.path(), fsi.clone()).await?;
     }
 
     let mut index_writer = fsi.index_writer.lock().await;
