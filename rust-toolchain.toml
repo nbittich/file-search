@@ -1,0 +1,4 @@
+[toolchain]
+channel = "stable"
+host = "1.71.1"
+targets = ["x86_64-unknown-linux-gnu"]
