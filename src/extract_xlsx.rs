@@ -1,46 +1,9 @@
 use std::{error::Error, path::PathBuf};
 
 use calamine::{open_workbook_auto, DataType, Reader};
-use serde::Deserialize;
-use tantivy::{
-    collector::TopDocs,
-    query::{FuzzyTermQuery, Query, QueryParser, RegexQuery, TermQuery},
-    schema::IndexRecordOption,
-    Document, Term,
-};
+use tantivy::Document;
 
-use crate::index_tantivy::FileSearchIndex;
-
-type Column = usize;
-type Row = usize;
-type Val = DataType;
-
-fn convert_row_column_to_letter(mut row: Row, mut column: Column) -> String {
-    row += 1;
-    column += 1;
-    let letters = ('A'..='Z').collect::<Vec<char>>();
-
-    let mut res = String::new();
-    if column < 26 {
-        res.push(letters[column - 1]);
-        res += &row.to_string();
-        return res;
-    }
-
-    while column / 26 != 0 {
-        let letter = column / 26;
-        res.push(letters[letter - 1]);
-        column %= 26;
-    }
-
-    if column > 0 {
-        res.push(letters[column - 1]);
-    }
-
-    res += &row.to_string();
-
-    res
-}
+use crate::{index_tantivy::FileSearchIndex, utils::convert_row_column_to_letter};
 
 pub async fn index_xlsx_file(
     file_search_index: FileSearchIndex,
@@ -54,6 +17,10 @@ pub async fn index_xlsx_file(
     for sheet_name in sheets {
         if let Some(Ok(range)) = workbook.worksheet_range(&sheet_name) {
             tracing::info!("indexing start for sheet {sheet_name}.");
+            if range.rows().len() < 2 {
+                tracing::info!("not enough row to index...");
+                continue;
+            }
             // extract labels
             let labels = range
                 .rows()
@@ -113,18 +80,19 @@ mod test {
     async fn test_xlsx() {
         let mut file_search_index = FileSearchIndex::new(
             &std::env::var("INDEX_DIR_PATH").unwrap_or_else(|_| "/tmp/__tantivy_data".to_string()),
+            50_000_000,
         )
         .unwrap();
         index_xlsx_file(file_search_index, "test2.xlsx")
             .await
             .unwrap();
     }
-
     #[test]
     #[ignore]
     fn test_read_idx() {
         let file_search_index = FileSearchIndex::new(
             &std::env::var("INDEX_DIR_PATH").unwrap_or_else(|_| "/tmp/__tantivy_data".to_string()),
+            50_000_000,
         )
         .unwrap();
 

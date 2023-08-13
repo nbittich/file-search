@@ -1,5 +1,3 @@
-#![allow(unused)]
-
 use std::{env::var, error::Error, net::SocketAddr, path::PathBuf, str::FromStr};
 
 use axum::{
@@ -10,14 +8,17 @@ use axum::{
     Json, Router,
 };
 use index_tantivy::QueryType;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tower_http::trace::{DefaultMakeSpan, TraceLayer};
 use tracing::Level;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
 use crate::index_tantivy::FileSearchIndex;
+mod extract_csv;
 mod extract_xlsx;
 mod index_tantivy;
+mod utils;
+
 pub static CORS_ALLOW_ORIGIN: &str = "CORS_ALLOW_ORIGIN";
 pub static BODY_SIZE_LIMIT: &str = "BODY_SIZE_LIMIT";
 pub static SERVICE_HOST: &str = "SERVICE_HOST";
@@ -152,6 +153,10 @@ async fn index_path(
     })? {
         "xls" | "xlsx" if path.exists() => {
             tokio::spawn(async move { extract_xlsx::index_xlsx_file(fsi, path).await });
+            Ok(StatusCode::ACCEPTED)
+        }
+        "csv" if path.exists() => {
+            tokio::spawn(async move { extract_csv::index_csv_file(fsi, path).await });
             Ok(StatusCode::ACCEPTED)
         }
         _ => {

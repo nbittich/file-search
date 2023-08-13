@@ -5,7 +5,7 @@ use tantivy::{
     collector::TopDocs,
     query::{FuzzyTermQuery, Query, QueryParser, RegexQuery, TermQuery},
     schema::{Field, IndexRecordOption, NamedFieldDocument, Schema, STORED, STRING, TEXT},
-    Document, Index, IndexReader, IndexWriter, ReloadPolicy, Term,
+    Index, IndexReader, IndexWriter, ReloadPolicy, Term,
 };
 use tokio::sync::Mutex;
 
