@@ -78,7 +78,7 @@ mod test {
     #[tokio::test]
     #[ignore]
     async fn test_xlsx() {
-        let mut file_search_index = FileSearchIndex::new(
+        let file_search_index = FileSearchIndex::new(
             &std::env::var("INDEX_DIR_PATH").unwrap_or_else(|_| "/tmp/__tantivy_data".to_string()),
             50_000_000,
         )

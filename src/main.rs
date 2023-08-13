@@ -131,11 +131,11 @@ async fn reindex_from_directory(
 
     for file in path.read_dir().map_err(|e| {
         tracing::error!("could not read dir {e:?}");
-        return ErrorResponse::from(StatusCode::INTERNAL_SERVER_ERROR);
+        ErrorResponse::from(StatusCode::INTERNAL_SERVER_ERROR)
     })? {
         let file = file.map_err(|e| {
             tracing::error!("could not read file {e:?}");
-            return ErrorResponse::from(StatusCode::INTERNAL_SERVER_ERROR);
+            ErrorResponse::from(StatusCode::INTERNAL_SERVER_ERROR)
         })?;
         index_path(file.path(), fsi.clone()).await?;
     }
