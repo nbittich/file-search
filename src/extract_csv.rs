@@ -10,8 +10,9 @@ pub async fn index_csv_file(
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let path = path_to_csv.into();
     tracing::info!("indexing start for csv {path:?}.");
-
-    let mut rdr = csv::Reader::from_path(&path)?;
+    let mut rdr = csv::ReaderBuilder::new()
+        .has_headers(false) // neededd
+        .from_path(&path)?;
     let records: Vec<_> = rdr.records().filter_map(|r| r.ok()).collect();
     if records.len() < 2 {
         tracing::info!("not enough row to index...");
