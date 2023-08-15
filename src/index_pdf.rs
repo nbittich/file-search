@@ -11,7 +11,7 @@ pub async fn index_pdf_file(
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let path = path.into();
     let out = pdf_extract::extract_text(&path)?;
-    let regex = Regex::new("((?:[^\n][\n]?)+)")?;
+    let regex = Regex::new("(?:\\s*\\.\\s*\\n\\s*)+")?;
 
     let mut index_writer = file_search_index.index_writer.lock().await;
 
@@ -46,7 +46,7 @@ mod test {
 
     use super::index_pdf_file;
     #[tokio::test]
-    //#[ignore]
+    #[ignore]
     async fn test_pdf() {
         let file_search_index = FileSearchIndex::new(
             &std::env::var("INDEX_DIR_PATH").unwrap_or_else(|_| "/tmp/__tantivy_data".to_string()),
