@@ -23,7 +23,7 @@ pub async fn index_pdf_file(
         let mut doc = Document::default();
         doc.add_text(
             file_search_index.cell_position_field,
-            &format!("row {}", row + 1),
+            &format!("line {}", row + 1),
         );
         doc.add_text(file_search_index.cell_value_field, line);
         doc.add_text(
