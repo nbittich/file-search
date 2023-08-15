@@ -33,6 +33,7 @@ time = { version = "0.3.25", features = [
   "macros",
 ] }
 pdf-extract = "0.6.5"
+regex = "1.9.3"
 # The profile that 'cargo dist' will build with
 [profile.dist]
 inherits = "release"

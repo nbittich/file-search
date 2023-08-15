@@ -1,5 +1,6 @@
 use std::{error::Error, path::PathBuf};
 
+use regex::Regex;
 use tantivy::Document;
 
 use crate::index_tantivy::FileSearchIndex;
@@ -10,12 +11,12 @@ pub async fn index_pdf_file(
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let path = path.into();
     let out = pdf_extract::extract_text(&path)?;
+    let regex = Regex::new("((?:[^\n][\n]?)+)")?;
 
     let mut index_writer = file_search_index.index_writer.lock().await;
-    let lines = out.lines();
 
     tracing::info!("indexing start for pdf {path:?}.");
-    for (row, line) in lines.enumerate() {
+    for (row, line) in regex.split(&out).enumerate() {
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -45,7 +46,7 @@ mod test {
 
     use super::index_pdf_file;
     #[tokio::test]
-    #[ignore]
+    //#[ignore]
     async fn test_pdf() {
         let file_search_index = FileSearchIndex::new(
             &std::env::var("INDEX_DIR_PATH").unwrap_or_else(|_| "/tmp/__tantivy_data".to_string()),
