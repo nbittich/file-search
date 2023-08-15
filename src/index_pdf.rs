@@ -21,7 +21,10 @@ pub async fn index_pdf_file(
             continue;
         }
         let mut doc = Document::default();
-        doc.add_text(file_search_index.cell_position_field, &format!("row {row}"));
+        doc.add_text(
+            file_search_index.cell_position_field,
+            &format!("row {}", row + 1),
+        );
         doc.add_text(file_search_index.cell_value_field, line);
         doc.add_text(
             file_search_index.file_name_field,
