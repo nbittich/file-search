@@ -71,7 +71,7 @@ mod test {
         query::{QueryParser, RegexQuery},
     };
 
-    use crate::{extract_xlsx::convert_row_column_to_letter, index_tantivy::FileSearchIndex};
+    use crate::{index_tantivy::FileSearchIndex, index_xlsx::convert_row_column_to_letter};
 
     use super::index_xlsx_file;
 

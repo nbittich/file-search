@@ -1,5 +1,5 @@
 # File search
-Index and search xlsx file content based on tantivy
+Index and search file content (xlsx, csv, pdf)
 
 ## endpoints
 

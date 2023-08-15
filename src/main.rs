@@ -16,9 +16,10 @@ use tracing::Level;
 use tracing_subscriber::{fmt::time::OffsetTime, EnvFilter, FmtSubscriber};
 
 use crate::index_tantivy::FileSearchIndex;
-mod extract_csv;
-mod extract_xlsx;
+mod index_csv;
+mod index_pdf;
 mod index_tantivy;
+mod index_xlsx;
 mod utils;
 
 pub static CORS_ALLOW_ORIGIN: &str = "CORS_ALLOW_ORIGIN";
@@ -167,11 +168,15 @@ async fn index_path(
         StatusCode::INTERNAL_SERVER_ERROR
     })? {
         "xls" | "xlsx" if path.exists() => {
-            tokio::spawn(async move { extract_xlsx::index_xlsx_file(fsi, path).await });
+            tokio::spawn(async move { index_xlsx::index_xlsx_file(fsi, path).await });
             Ok(StatusCode::ACCEPTED)
         }
         "csv" if path.exists() => {
-            tokio::spawn(async move { extract_csv::index_csv_file(fsi, path).await });
+            tokio::spawn(async move { index_csv::index_csv_file(fsi, path).await });
+            Ok(StatusCode::ACCEPTED)
+        }
+        "pdf" if path.exists() => {
+            tokio::spawn(async move { index_pdf::index_pdf_file(fsi, path).await });
             Ok(StatusCode::ACCEPTED)
         }
         _ => {
