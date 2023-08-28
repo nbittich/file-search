@@ -32,7 +32,7 @@ time = { version = "0.3.25", features = [
   "local-offset",
   "macros",
 ] }
-pdf-extract = "0.6.5"
+pdf-extract = "0.7.0"
 regex = "1.9.3"
 # The profile that 'cargo dist' will build with
 [profile.dist]

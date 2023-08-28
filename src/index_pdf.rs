@@ -57,4 +57,11 @@ mod test {
             .await
             .unwrap();
     }
+
+    #[tokio::test]
+    async fn test_buggy_pdf() {
+        // https://github.com/jrmuizel/pdf-extract/issues/67
+        let out = pdf_extract::extract_text("dummycv.pdf").unwrap();
+        println!("{out}");
+    }
 }
