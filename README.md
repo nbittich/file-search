@@ -31,7 +31,7 @@ GET http://localhost:8080/search?page=0&per_page=10&q=sango&query_type=regexQuer
 | INDEX_WRITER_SIZE              | 50000000 (50mb)                     |
 
 ## install
-- use the installation script from the latest [release](/releases)
+- use the installation script from the latest [release](https://github.com/nbittich/file-search/releases)
 - create file `/etc/systemd/system/file-search.service` and paste the following:
 
 
