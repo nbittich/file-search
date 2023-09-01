@@ -12,12 +12,12 @@ repository = "https://github.com/nbittich/file-search"
 axum = { version = "0.6.20", features = ["headers", "tracing"] }
 axum-extra = "0.7.7"
 calamine = { version = "0.21.2", features = ["chrono", "dates"] }
-chrono = "0.4.26"
+chrono = "0.4.28"
 csv = "1.2.2"
-serde = { version = "1.0.183", features = ["derive"] }
-serde_json = "1.0.104"
-tantivy = "0.20.2"
-tokio = { version = "1.31.0", features = ["full"] }
+serde = { version = "1.0.188", features = ["derive"] }
+serde_json = "1.0.105"
+tantivy = "0.21.0"
+tokio = { version = "1.32.0", features = ["full"] }
 tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.17", features = [
   "env-filter",
@@ -27,13 +27,13 @@ tracing-subscriber = { version = "0.3.17", features = [
 uuid = { version = "1.4.1", features = ["v4"] }
 tower = "0.4.13"
 tower-http = { version = "0.4.3", features = ["fs", "trace", "redirect"] }
-time = { version = "0.3.25", features = [
+time = { version = "0.3.28", features = [
   "formatting",
   "local-offset",
   "macros",
 ] }
 pdf-extract = "0.7.0"
-regex = "1.9.3"
+regex = "1.9.4"
 # The profile that 'cargo dist' will build with
 [profile.dist]
 inherits = "release"
