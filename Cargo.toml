@@ -10,12 +10,12 @@ repository = "https://github.com/nbittich/file-search"
 
 [dependencies]
 axum = { version = "0.6.20", features = ["headers", "tracing"] }
-axum-extra = "0.7.7"
-calamine = { version = "0.21.2", features = ["chrono", "dates"] }
-chrono = "0.4.28"
+axum-extra = "0.8.0"
+calamine = { version = "0.22.0", features = ["chrono", "dates"] }
+chrono = "0.4.31"
 csv = "1.2.2"
 serde = { version = "1.0.188", features = ["derive"] }
-serde_json = "1.0.105"
+serde_json = "1.0.107"
 tantivy = "0.21.0"
 tokio = { version = "1.32.0", features = ["full"] }
 tracing = "0.1.37"
@@ -26,14 +26,14 @@ tracing-subscriber = { version = "0.3.17", features = [
 ] }
 uuid = { version = "1.4.1", features = ["v4"] }
 tower = "0.4.13"
-tower-http = { version = "0.4.3", features = ["fs", "trace", "redirect"] }
-time = { version = "0.3.28", features = [
+tower-http = { version = "0.4.4", features = ["fs", "trace", "redirect"] }
+time = { version = "0.3.29", features = [
   "formatting",
   "local-offset",
   "macros",
 ] }
-pdf-extract = "0.7.0"
-regex = "1.9.4"
+pdf-extract = "0.7.2"
+regex = "1.9.6"
 # The profile that 'cargo dist' will build with
 [profile.dist]
 inherits = "release"
@@ -42,10 +42,12 @@ lto = "thin"
 # Config for 'cargo dist'
 [workspace.metadata.dist]
 # The preferred cargo-dist version to use in CI (Cargo.toml SemVer syntax)
-cargo-dist-version = "0.2.0"
-# CI backends to support (see 'cargo dist generate-ci')
+cargo-dist-version = "0.3.1"
+# CI backends to support
 ci = ["github"]
 # The installers to generate for each app
 installers = ["shell"]
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["x86_64-unknown-linux-gnu"]
+# Publish jobs to run in CI
+pr-run-mode = "skip"
