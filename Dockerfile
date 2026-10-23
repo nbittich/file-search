@@ -1,36 +1,48 @@
-FROM rust:1.99.1 as builder
+## RUNTIME
+FROM alpine:3.22 AS runtime
 
-RUN apt update &&  apt upgrade -y && apt install -y libssl-dev build-essential cmake
+RUN apk add --no-cache tzdata
+RUN ln -s /usr/share/zoneinfo/Europe/Brussels /etc/localtime
+RUN apk add --no-cache ca-certificates libreoffice chromium
+RUN apk add --no-cache \
+    --repository http://dl-cdn.alpinelinux.org/alpine/edge/testing \
+    --repository http://dl-cdn.alpinelinux.org/alpine/edge/main \
+    gperftools-dev
+RUN apk add --no-cache nss freetype harfbuzz ttf-freefont
+RUN apk add --no-cache openjdk8-jre imagemagick=7.1.2.15-r0 ghostscript
+RUN sed -i 's/pattern="{GIF,JPEG,PNG,WEBP}"/pattern="{GIF,JPEG,PNG,WEBP,PDF}"/' /etc/ImageMagick-7/policy.xml
 
+## INITIAL BUILDER
+FROM rust:1.99-alpine3.22 AS builder
+RUN apk add --no-cache openssl-dev curl build-base cmake pkgconfig musl-dev openssl-libs-static perl \
+    && apk add --no-cache \
+    --repository http://dl-cdn.alpinelinux.org/alpine/edge/testing \
+    --repository http://dl-cdn.alpinelinux.org/alpine/edge/main \
+    gperftools-dev
+
+## CACHE LAYER
+FROM builder AS cache
 WORKDIR /app
-
-RUN cargo new file-search
-
-WORKDIR /app/file-search
-
-COPY ./Cargo.toml ./Cargo.lock ./
-
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir src && echo "fn main() {println!(\"hello world\");}" > src/main.rs
+ENV RUSTFLAGS="-C link-args=-ltcmalloc"
 RUN cargo build --release 
+RUN rm -rf src target/release/file-service target/release/deps/file_service*
 
-RUN rm -rf ./src
+## BUILD LAYER
+FROM cache AS build
+WORKDIR /app
+ENV RUSTFLAGS="-C link-args=-ltcmalloc"
+COPY ./src ./src
+RUN cargo build --release
 
-COPY ./src/ ./src
+## ENTRY POINT
+FROM runtime
+WORKDIR /app
+COPY --from=build /app/target/release/file-service /file-service
 
-RUN rm ./target/release/deps/file_search*
+ENV RUST_LOG=INFO
+ENV LD_PRELOAD=/usr/lib/libtcmalloc.so
+ENV TCMALLOC_AGGRESSIVE_DECOMMIT=t
 
-RUN cargo build --release 
-
-FROM debian:bullseye-slim AS runtime
-RUN apt  update && apt upgrade -y
-RUN apt install -y ca-certificates 
-
-# Set timezone
-ENV TZ="Europe/Brussels"
-
-ENV RUST_LOG=info
-
-VOLUME /root/.local/share
-
-COPY --from=builder  /app/file-search/target/release/file-search .
-
-ENTRYPOINT [ "./file-search" ]
+ENTRYPOINT ["/file-service"]
