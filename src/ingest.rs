@@ -281,12 +281,16 @@ impl Ingestor {
                     if !seen_archives.insert(archive_key.clone()) {
                         continue;
                     }
-                    let dest = self.state.join("extracted").join(hex::encode(Sha256::digest(archive_key.as_bytes())));
-                    if !dest.exists() {
-                        if let Err(e) = unpack(path, &dest) {
-                            self.record(key, digest, "skipped", Some(e.to_string())).await?;
-                            continue;
-                        }
+                    let dest = self
+                        .state
+                        .join("extracted")
+                        .join(hex::encode(Sha256::digest(archive_key.as_bytes())));
+                    if !dest.exists()
+                        && let Err(e) = unpack(path, &dest)
+                    {
+                        self.record(key, digest, "skipped", Some(e.to_string()))
+                            .await?;
+                        continue;
                     }
                     self.record(key, digest, "indexed", None).await?;
                     dirs.push(dest);
@@ -300,7 +304,8 @@ impl Ingestor {
         // ordering ensures the same content hash keeps the same canonical file.
         let extracted = self.state.join("extracted");
         candidates.sort_by(|a, b| {
-            Path::new(&a.0).starts_with(&extracted)
+            Path::new(&a.0)
+                .starts_with(&extracted)
                 .cmp(&Path::new(&b.0).starts_with(&extracted))
                 .then_with(|| a.0.cmp(&b.0))
         });
@@ -311,7 +316,8 @@ impl Ingestor {
                 if previous.as_ref().is_some_and(|e| e.status == "indexed") {
                     self.index.delete_source(&key).await?;
                 }
-                self.record(key, digest, "skipped", Some("unsupported format".into())).await?;
+                self.record(key, digest, "skipped", Some("unsupported format".into()))
+                    .await?;
                 continue;
             }
             if let Some(source) = canonical.get(&digest) {
@@ -321,17 +327,25 @@ impl Ingestor {
                 }
                 let reason = format!("duplicate content of {source}");
                 if !previous.as_ref().is_some_and(|e| {
-                    e.digest == digest && e.status == "duplicate" && e.reason.as_deref() == Some(reason.as_str())
+                    e.digest == digest
+                        && e.status == "duplicate"
+                        && e.reason.as_deref() == Some(reason.as_str())
                 }) {
                     self.record(key, digest, "duplicate", Some(reason)).await?;
                 }
                 continue;
             }
-            if previous.as_ref().is_some_and(|e| e.digest == digest && e.status == "indexed") {
+            if previous
+                .as_ref()
+                .is_some_and(|e| e.digest == digest && e.status == "indexed")
+            {
                 canonical.insert(digest, key);
                 continue;
             }
-            if previous.as_ref().is_some_and(|e| e.digest == digest && e.status == "skipped") {
+            if previous
+                .as_ref()
+                .is_some_and(|e| e.digest == digest && e.status == "skipped")
+            {
                 continue;
             }
             // Remove stale chunks when the same path has changed content or
@@ -339,7 +353,8 @@ impl Ingestor {
             if previous.is_some() {
                 self.index.delete_source(&key).await?;
             }
-            self.record(key.clone(), digest.clone(), "pending", None).await?;
+            self.record(key.clone(), digest.clone(), "pending", None)
+                .await?;
             match self.process(PathBuf::from(&key)).await {
                 Ok(()) => {
                     canonical.insert(digest.clone(), key.clone());
@@ -348,7 +363,8 @@ impl Ingestor {
                 Err(e) => {
                     tracing::warn!("skipping {key}: {e}");
                     self.index.delete_source(&key).await?;
-                    self.record(key, digest, "skipped", Some(e.to_string())).await?;
+                    self.record(key, digest, "skipped", Some(e.to_string()))
+                        .await?;
                 }
             }
         }

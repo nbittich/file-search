@@ -159,7 +159,9 @@ impl FileSearchIndex {
             let limit = (total - offset).min(256);
             let hits = searcher.search(
                 &query,
-                &TopDocs::with_limit(limit).and_offset(offset).order_by_score(),
+                &TopDocs::with_limit(limit)
+                    .and_offset(offset)
+                    .order_by_score(),
             )?;
             if hits.is_empty() {
                 break;
@@ -171,7 +173,9 @@ impl FileSearchIndex {
                     .get_first(self.source_path_field)
                     .and_then(|value| value.as_str())
                     .map(str::to_owned)
-                    .unwrap_or_else(|| format!("missing-source:{}:{}", address.segment_ord, address.doc_id));
+                    .unwrap_or_else(|| {
+                        format!("missing-source:{}:{}", address.segment_ord, address.doc_id)
+                    });
                 if seen.insert(source) && seen.len() > first {
                     docs.push(document.to_named_doc(schema));
                     if docs.len() == per_page {
