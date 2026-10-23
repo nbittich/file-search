@@ -32,9 +32,9 @@ jobs:
         with:
           push: true
           platforms: ${{ matrix.platform }}
-          tags: nbittich/file-service:${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
-          cache-from: type=registry,ref=nbittich/file-service:buildcache${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
-          cache-to: type=registry,ref=nbittich/file-service:buildcache${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }},mode=max
+          tags: nbittich/file-search:${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
+          cache-from: type=registry,ref=nbittich/file-search:buildcache${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
+          cache-to: type=registry,ref=nbittich/file-search:buildcache${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }},mode=max
   merge:
     runs-on: ubuntu-latest
     needs: build
@@ -50,6 +50,6 @@ jobs:
 
       - name: Create and push multi-arch manifest
         run: |
-          docker buildx imagetools create -t nbittich/file-service:latest \
-            nbittich/file-service:amd64 \
-            nbittich/file-service:arm64
+          docker buildx imagetools create -t nbittich/file-search:latest \
+            nbittich/file-search:amd64 \
+            nbittich/file-search:arm64
