@@ -27,7 +27,7 @@ COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && echo "fn main() {println!(\"hello world\");}" > src/main.rs
 ENV RUSTFLAGS="-C link-args=-ltcmalloc"
 RUN cargo build --release 
-RUN rm -rf src target/release/file-service target/release/deps/file_service*
+RUN rm -rf src target/release/file-search target/release/deps/file_service*
 
 ## BUILD LAYER
 FROM cache AS build
@@ -39,10 +39,10 @@ RUN cargo build --release
 ## ENTRY POINT
 FROM runtime
 WORKDIR /app
-COPY --from=build /app/target/release/file-service /file-service
+COPY --from=build /app/target/release/file-search /file-search
 
 ENV RUST_LOG=INFO
 ENV LD_PRELOAD=/usr/lib/libtcmalloc.so
 ENV TCMALLOC_AGGRESSIVE_DECOMMIT=t
 
-ENTRYPOINT ["/file-service"]
+ENTRYPOINT ["/file-search"]
