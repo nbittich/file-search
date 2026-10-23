@@ -17,9 +17,11 @@ use tracing_subscriber::{EnvFilter, FmtSubscriber, fmt::time::OffsetTime};
 
 use crate::index_tantivy::FileSearchIndex;
 mod index_csv;
+mod index_extra;
 mod index_pdf;
 mod index_tantivy;
 mod index_xlsx;
+mod ingest;
 mod utils;
 
 pub static CORS_ALLOW_ORIGIN: &str = "CORS_ALLOW_ORIGIN";
@@ -69,6 +71,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
         index_writer_size,
     )?;
 
+    let upload_root = var("UPLOAD_DIR").unwrap_or_else(|_| "/tmp/uploads".to_string());
+    let state_dir = var("INGEST_STATE_DIR").unwrap_or_else(|_| "/tmp/app/state".to_string());
+    let ingestor = ingest::Ingestor::new(
+        file_search_index.clone(),
+        PathBuf::from(upload_root),
+        PathBuf::from(state_dir),
+        &PathBuf::from(var(INDEX_DIR_PATH).unwrap_or_else(|_| "/tmp/__tantivy_data".into())),
+    )
+    .map_err(|e| format!("{e}"))?;
+    let shared = ingestor.clone();
+    ingestor.start();
     let addr = SocketAddr::from_str(&format!("{host}:{port}"))?;
     tracing::info!("{app_name} :: listening on {:?}", addr);
     let app = Router::new()
@@ -76,11 +89,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .route("/reindex", post(reindex_from_directory))
         .route("/search", get(get_search))
         .route("/find-all", get(get_find_all))
+        .route("/stats", get(get_stats))
+        .route("/reset", post(reset_index))
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(DefaultMakeSpan::default().include_headers(true)),
         )
-        .with_state(file_search_index);
+        .with_state(shared);
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
     axum::serve(
@@ -115,87 +130,70 @@ pub fn setup_tracing() -> Result<(), Box<dyn Error>> {
 
 async fn get_search(
     query: Query<SearchRequest>,
-    State(fsi): State<FileSearchIndex>,
+    State(ingestor): State<ingest::Ingestor>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let docs = fsi
+    let docs = ingestor
+        .index
         .search(query.page, query.per_page, &query.q, &query.query_type)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(docs))
 }
 async fn get_find_all(
     query: Query<FindAllRequest>,
-    State(fsi): State<FileSearchIndex>,
+    State(ingestor): State<ingest::Ingestor>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let docs = fsi
+    let docs = ingestor
+        .index
         .find_all(query.page, query.per_page)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(docs))
 }
 async fn post_index(
-    State(fsi): State<FileSearchIndex>,
+    State(ingestor): State<ingest::Ingestor>,
     axum::extract::Json(index_request): axum::extract::Json<IndexRequest>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let path = PathBuf::from(index_request.file_path);
     tracing::info!("getting path {path:?}");
-    index_path(path, fsi).await
+    index_path(path, ingestor).await
 }
 
-async fn reindex_from_directory(
-    State(fsi): State<FileSearchIndex>,
-    reindex: Query<ReindexRequest>,
-) -> Result<impl IntoResponse, StatusCode> {
-    let path = PathBuf::from(&reindex.directory_path);
-    if !path.exists() || !path.is_dir() {
-        tracing::error!("path {path:?} doesn't exist or is not a directory");
-        return Err(StatusCode::BAD_REQUEST);
-    }
-
-    let mut index_writer = fsi.index_writer.lock().await;
-
-    index_writer.delete_all_documents().map_err(|e| {
-        tracing::error!("error while deleting all docs: {e:?}");
+async fn get_stats(State(ingestor): State<ingest::Ingestor>) -> Json<ingest::Stats> {
+    Json(ingestor.stats().await)
+}
+async fn reset_index(State(ingestor): State<ingest::Ingestor>) -> Result<StatusCode, StatusCode> {
+    ingestor.reset().await.map_err(|e| {
+        tracing::error!("reset: {e}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
-
-    index_writer.commit().map_err(|e| {
-        tracing::error!("error while committing: {e:?}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    for file in path.read_dir().map_err(|e| {
-        tracing::error!("could not read dir {e:?}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })? {
-        let file = file.map_err(|e| {
-            tracing::error!("could not read file {e:?}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-        index_path(file.path(), fsi.clone()).await?;
-    }
-
+    // A new scan will index every upload from scratch.
     Ok(StatusCode::ACCEPTED)
 }
-
-async fn index_path(path: PathBuf, fsi: FileSearchIndex) -> Result<impl IntoResponse, StatusCode> {
-    match path.extension().and_then(|e| e.to_str()).ok_or_else(|| {
-        tracing::error!("could not determine extension");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })? {
-        "xls" | "xlsx" if path.exists() => {
-            tokio::spawn(async move { index_xlsx::index_xlsx_file(&fsi, path).await });
-            Ok(StatusCode::ACCEPTED)
-        }
-        "csv" if path.exists() => {
-            tokio::spawn(async move { index_csv::index_csv_file(&fsi, path).await });
-            Ok(StatusCode::ACCEPTED)
-        }
-        "pdf" if path.exists() => {
-            tokio::spawn(async move { index_pdf::index_pdf_file(&fsi, path).await });
-            Ok(StatusCode::ACCEPTED)
-        }
-        _ => {
-            tracing::error!("{path:?} not yet supported");
-            Err(StatusCode::FORBIDDEN)
-        }
+async fn reindex_from_directory(
+    State(ingestor): State<ingest::Ingestor>,
+    reindex: Query<ReindexRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let dir = PathBuf::from(&reindex.directory_path);
+    if !dir.is_dir() {
+        return Err(StatusCode::BAD_REQUEST);
     }
+    ingestor
+        .reset()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // The upload watcher is responsible for upload folder contents.
+    ingestor
+        .scan()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(StatusCode::ACCEPTED)
+}
+async fn index_path(path: PathBuf, ingestor: ingest::Ingestor) -> Result<StatusCode, StatusCode> {
+    if !path.is_file() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    ingestor.process(path).await.map_err(|e| {
+        tracing::error!("index failed: {e}");
+        StatusCode::UNPROCESSABLE_ENTITY
+    })?;
+    Ok(StatusCode::ACCEPTED)
 }

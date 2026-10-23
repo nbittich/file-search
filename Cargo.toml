@@ -34,7 +34,13 @@ time = { version = "0.3.30", features = [
 ] }
 pdf-extract = { git = "https://github.com/jrmuizel/pdf-extract.git", rev = "379647e" }
 
-regex = "1.10.2"
+sha2 = "0.11"
+hex = "0.4"
+walkdir = "2"
+zip = "9"
+tar = "0.4"
+flate2 = "1"
+
 # The profile that 'cargo dist' will build with
 [profile.dist]
 inherits = "release"

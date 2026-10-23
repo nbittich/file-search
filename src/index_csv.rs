@@ -14,7 +14,7 @@ pub async fn index_csv_file(
         .has_headers(false) // neededd
         .from_path(&path)?;
     let records: Vec<_> = rdr.records().filter_map(|r| r.ok()).collect();
-    if records.len() < 2 {
+    if records.is_empty() {
         tracing::info!("not enough row to index...");
         return Ok(());
     }
@@ -25,8 +25,12 @@ pub async fn index_csv_file(
         .flat_map(|c| c.iter().map(|x| x.to_string()))
         .collect();
     let mut index_writer = file_search_index.index_writer.lock().await;
+    index_writer.delete_term(tantivy::Term::from_field_text(
+        file_search_index.source_path_field,
+        &path.to_string_lossy(),
+    ));
 
-    for (row_idx, row) in records.iter().skip(1).enumerate() {
+    for (row_idx, row) in records.iter().enumerate() {
         if row.iter().all(|c| c.trim().is_empty()) {
             continue;
         }
@@ -36,6 +40,7 @@ pub async fn index_csv_file(
             path.file_name().ok_or("file not found")?.to_string_lossy(),
         );
         doc.add_text(file_search_index.sheet_name_field, "Sheet1");
+        doc.add_text(file_search_index.source_path_field, path.to_string_lossy());
         for (column, cell) in row.iter().enumerate() {
             let cell = cell.trim();
             if cell.is_empty() {
@@ -43,9 +48,15 @@ pub async fn index_csv_file(
             }
             doc.add_text(
                 file_search_index.cell_position_field,
-                convert_row_column_to_letter(row_idx + 1, column), // we skip one row
+                convert_row_column_to_letter(row_idx, column),
             );
-            doc.add_text(file_search_index.cell_ctx_field, &labels[column]);
+            if let Some(label) = labels.get(column) {
+                doc.add_text(file_search_index.cell_ctx_field, label);
+                doc.add_text(
+                    file_search_index.cell_value_field,
+                    format!("{label}: {cell}"),
+                );
+            }
             doc.add_text(file_search_index.cell_value_field, cell);
         }
 

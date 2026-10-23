@@ -14,10 +14,14 @@ pub async fn index_xlsx_file(
     let sheets = workbook.sheet_names().to_owned();
 
     let mut index_writer = file_search_index.index_writer.lock().await;
+    index_writer.delete_term(tantivy::Term::from_field_text(
+        file_search_index.source_path_field,
+        &path_to_xlsx.to_string_lossy(),
+    ));
     for sheet_name in sheets {
         if let Ok(range) = workbook.worksheet_range(&sheet_name) {
             tracing::info!("indexing start for sheet {sheet_name}.");
-            if range.rows().len() < 2 {
+            if range.rows().len() < 1 {
                 tracing::info!("not enough row to index...");
                 continue;
             }
@@ -29,7 +33,7 @@ pub async fn index_xlsx_file(
                 .map(|c| c.to_string())
                 .collect::<Vec<String>>();
 
-            for (row_idx, row) in range.rows().skip(1).enumerate() {
+            for (row_idx, row) in range.rows().enumerate() {
                 if row.iter().all(|c| c == &Data::Empty) {
                     continue;
                 }
@@ -42,15 +46,25 @@ pub async fn index_xlsx_file(
                         .to_string_lossy(),
                 );
                 doc.add_text(file_search_index.sheet_name_field, &sheet_name);
+                doc.add_text(
+                    file_search_index.source_path_field,
+                    path_to_xlsx.to_string_lossy(),
+                );
                 for (column, cell) in row.iter().enumerate() {
                     if &Data::Empty == cell {
                         continue;
                     }
                     doc.add_text(
                         file_search_index.cell_position_field,
-                        convert_row_column_to_letter(row_idx + 1, column), // we skip one row
+                        convert_row_column_to_letter(row_idx, column),
                     );
-                    doc.add_text(file_search_index.cell_ctx_field, &labels[column]);
+                    if let Some(label) = labels.get(column) {
+                        doc.add_text(file_search_index.cell_ctx_field, label);
+                        doc.add_text(
+                            file_search_index.cell_value_field,
+                            format!("{label}: {}", cell),
+                        );
+                    }
                     doc.add_text(file_search_index.cell_value_field, cell.to_string());
                 }
 

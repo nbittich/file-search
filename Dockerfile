@@ -3,13 +3,13 @@ FROM alpine:3.22 AS runtime
 
 RUN apk add --no-cache tzdata
 RUN ln -s /usr/share/zoneinfo/Europe/Brussels /etc/localtime
-RUN apk add --no-cache ca-certificates libreoffice chromium
+RUN apk add --no-cache ca-certificates libreoffice poppler-utils tesseract-ocr tesseract-ocr-data-eng
 RUN apk add --no-cache \
     --repository http://dl-cdn.alpinelinux.org/alpine/edge/testing \
     --repository http://dl-cdn.alpinelinux.org/alpine/edge/main \
     gperftools-dev
 RUN apk add --no-cache nss freetype harfbuzz ttf-freefont
-RUN apk add --no-cache openjdk8-jre imagemagick=7.1.2.15-r0 ghostscript
+RUN apk add --no-cache openjdk8-jre imagemagick ghostscript
 RUN sed -i 's/pattern="{GIF,JPEG,PNG,WEBP}"/pattern="{GIF,JPEG,PNG,WEBP,PDF}"/' /etc/ImageMagick-7/policy.xml
 
 ## INITIAL BUILDER
@@ -41,6 +41,9 @@ FROM runtime
 WORKDIR /app
 COPY --from=build /app/target/release/file-search /file-search
 
+ENV UPLOAD_DIR=/uploads
+ENV INGEST_STATE_DIR=/app/state
+ENV UPLOAD_SCAN_INTERVAL_SECS=10
 ENV RUST_LOG=INFO
 ENV LD_PRELOAD=/usr/lib/libtcmalloc.so
 ENV TCMALLOC_AGGRESSIVE_DECOMMIT=t

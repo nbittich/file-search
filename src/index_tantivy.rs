@@ -30,6 +30,7 @@ pub struct FileSearchIndex {
     pub cell_ctx_field: Field,
     pub file_name_field: Field,
     pub sheet_name_field: Field,
+    pub source_path_field: Field,
 }
 
 pub static CELL_POSITION_FIELD: &str = "cell_position";
@@ -37,6 +38,7 @@ pub static CELL_CTX_FIELD: &str = "cell_ctx";
 pub static CELL_VALUE_FIELD: &str = "cell_value";
 pub static FILE_NAME_FIELD: &str = "file_name";
 pub static SHEET_NAME_FIELD: &str = "sheet_name";
+pub static SOURCE_PATH_FIELD: &str = "source_path";
 
 impl FileSearchIndex {
     pub fn new(path: &str, writer_memory_arena: usize) -> Result<FileSearchIndex, Box<dyn Error>> {
@@ -50,7 +52,8 @@ impl FileSearchIndex {
         let cell_value_field = schema_builder.add_text_field(CELL_VALUE_FIELD, TEXT | STORED);
         let cell_ctx_field = schema_builder.add_text_field(CELL_CTX_FIELD, STRING | STORED);
         let file_name_field = schema_builder.add_text_field(FILE_NAME_FIELD, STRING | STORED);
-        let sheet_name_field = schema_builder.add_text_field(SHEET_NAME_FIELD, STRING | STORED);
+        let sheet_name_field = schema_builder.add_text_field(SHEET_NAME_FIELD, TEXT | STORED);
+        let source_path_field = schema_builder.add_text_field(SOURCE_PATH_FIELD, STRING | STORED);
         let schema = schema_builder.build();
         let index = Index::open_or_create(
             tantivy::directory::MmapDirectory::open(&index_dir)?,
@@ -71,8 +74,23 @@ impl FileSearchIndex {
             file_name_field,
             sheet_name_field,
             cell_position_field,
+            source_path_field,
         })
     }
+    pub async fn delete_source(&self, source: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let mut writer = self.index_writer.lock().await;
+        writer.delete_term(Term::from_field_text(self.source_path_field, source));
+        writer.commit()?;
+        Ok(())
+    }
+
+    pub async fn reset(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let mut writer = self.index_writer.lock().await;
+        writer.delete_all_documents()?;
+        writer.commit()?;
+        Ok(())
+    }
+
     pub fn convert_query_type_to_query(
         &self,
         q: &str,
@@ -95,7 +113,14 @@ impl FileSearchIndex {
                 true,
             )),
             QueryType::QueryParser => {
-                let query_parser = QueryParser::for_index(&self.index, vec![self.cell_value_field]);
+                let query_parser = QueryParser::for_index(
+                    &self.index,
+                    vec![
+                        self.cell_value_field,
+                        self.cell_ctx_field,
+                        self.sheet_name_field,
+                    ],
+                );
                 let query = query_parser.parse_query(q)?;
                 Box::new(query)
             }
