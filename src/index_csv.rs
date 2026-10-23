@@ -1,11 +1,11 @@
 use std::{error::Error, path::PathBuf};
 
-use tantivy::Document;
+use tantivy::TantivyDocument;
 
 use crate::{index_tantivy::FileSearchIndex, utils::convert_row_column_to_letter};
 
 pub async fn index_csv_file(
-    file_search_index: FileSearchIndex,
+    file_search_index: &FileSearchIndex,
     path_to_csv: impl Into<PathBuf>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let path = path_to_csv.into();
@@ -30,7 +30,7 @@ pub async fn index_csv_file(
         if row.iter().all(|c| c.trim().is_empty()) {
             continue;
         }
-        let mut doc = Document::default();
+        let mut doc = TantivyDocument::default();
         doc.add_text(
             file_search_index.file_name_field,
             path.file_name().ok_or("file not found")?.to_string_lossy(),
@@ -46,7 +46,7 @@ pub async fn index_csv_file(
                 convert_row_column_to_letter(row_idx + 1, column), // we skip one row
             );
             doc.add_text(file_search_index.cell_ctx_field, &labels[column]);
-            doc.add_text(file_search_index.cell_value_field, cell.to_string());
+            doc.add_text(file_search_index.cell_value_field, cell);
         }
 
         index_writer.add_document(doc)?;

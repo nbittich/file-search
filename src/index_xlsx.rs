@@ -1,12 +1,12 @@
 use std::{error::Error, path::PathBuf};
 
-use calamine::{open_workbook_auto, DataType, Reader};
-use tantivy::Document;
+use calamine::{Data, Reader, open_workbook_auto};
+use tantivy::TantivyDocument;
 
 use crate::{index_tantivy::FileSearchIndex, utils::convert_row_column_to_letter};
 
 pub async fn index_xlsx_file(
-    file_search_index: FileSearchIndex,
+    file_search_index: &FileSearchIndex,
     path_to_xlsx: impl Into<PathBuf>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let path_to_xlsx = path_to_xlsx.into();
@@ -15,7 +15,7 @@ pub async fn index_xlsx_file(
 
     let mut index_writer = file_search_index.index_writer.lock().await;
     for sheet_name in sheets {
-        if let Some(Ok(range)) = workbook.worksheet_range(&sheet_name) {
+        if let Ok(range) = workbook.worksheet_range(&sheet_name) {
             tracing::info!("indexing start for sheet {sheet_name}.");
             if range.rows().len() < 2 {
                 tracing::info!("not enough row to index...");
@@ -30,10 +30,10 @@ pub async fn index_xlsx_file(
                 .collect::<Vec<String>>();
 
             for (row_idx, row) in range.rows().skip(1).enumerate() {
-                if row.iter().all(|c| c == &DataType::Empty) {
+                if row.iter().all(|c| c == &Data::Empty) {
                     continue;
                 }
-                let mut doc = Document::default();
+                let mut doc = TantivyDocument::default();
                 doc.add_text(
                     file_search_index.file_name_field,
                     path_to_xlsx
@@ -43,7 +43,7 @@ pub async fn index_xlsx_file(
                 );
                 doc.add_text(file_search_index.sheet_name_field, &sheet_name);
                 for (column, cell) in row.iter().enumerate() {
-                    if &DataType::Empty == cell {
+                    if &Data::Empty == cell {
                         continue;
                     }
                     doc.add_text(
@@ -67,6 +67,7 @@ pub async fn index_xlsx_file(
 #[cfg(test)]
 mod test {
     use tantivy::{
+        Document, TantivyDocument,
         collector::TopDocs,
         query::{QueryParser, RegexQuery},
     };
@@ -83,7 +84,7 @@ mod test {
             50_000_000,
         )
         .unwrap();
-        index_xlsx_file(file_search_index, "test2.xlsx")
+        index_xlsx_file(&file_search_index, "test2.xlsx")
             .await
             .unwrap();
     }
@@ -103,12 +104,12 @@ mod test {
         let regex_query =
             RegexQuery::from_pattern("(?i)sango.*", file_search_index.cell_value_field).unwrap();
         let top_docs = searcher
-            .search(&regex_query, &TopDocs::with_limit(10))
+            .search(&regex_query, &TopDocs::with_limit(10).order_by_score())
             .unwrap();
         assert_eq!(2, top_docs.len());
         for (_score, doc_address) in top_docs {
-            let retrieved_doc = searcher.doc(doc_address).unwrap();
-            println!("{}", schema.to_json(&retrieved_doc))
+            let retrieved_doc: TantivyDocument = searcher.doc(doc_address).unwrap();
+            println!("{}", retrieved_doc.to_json(&schema))
         }
 
         let query_parser = QueryParser::for_index(
@@ -118,10 +119,12 @@ mod test {
         let query = query_parser
             .parse_query("\"Regionally membership\"~1")
             .unwrap();
-        let top_docs = searcher.search(&query, &TopDocs::with_limit(10)).unwrap();
+        let top_docs = searcher
+            .search(&query, &TopDocs::with_limit(10).order_by_score())
+            .unwrap();
         for (_score, doc_address) in top_docs.iter() {
-            let retrieved_doc = searcher.doc(*doc_address).unwrap();
-            println!("{}", schema.to_json(&retrieved_doc))
+            let retrieved_doc: TantivyDocument = searcher.doc(*doc_address).unwrap();
+            println!("{}", retrieved_doc.to_json(&schema))
         }
         assert_eq!(1, top_docs.len());
 

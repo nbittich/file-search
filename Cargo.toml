@@ -1,7 +1,7 @@
 [package]
 name = "file-search"
 version = "0.1.11"
-edition = "2021"
+edition = "2024"
 license = "MPL-2.0"
 authors = ["Nordine Bittich"]
 description = "File indexing and search"
@@ -9,30 +9,31 @@ repository = "https://github.com/nbittich/file-search"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-axum = { version = "0.6.20", features = ["headers", "tracing"] }
-axum-extra = "0.8.0"
-calamine = { version = "0.22.0", features = ["chrono", "dates"] }
+axum = { version = "0.8.9", features = [ "tracing"] }
+axum-extra = "0.12.6"
+calamine = { version = "0.37.0", features = ["chrono", "dates"] }
 chrono = "0.4.31"
 csv = "1.3.0"
-serde = { version = "1.0.192", features = ["derive"] }
+serde = { version = "1.0.193", features = ["derive"] }
 serde_json = "1.0.108"
-tantivy = "0.21.1"
-tokio = { version = "1.33.0", features = ["full"] }
+tantivy = "0.27.0"
+tokio = { version = "1.34.0", features = ["full"] }
 tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.17", features = [
+tracing-subscriber = { version = "0.3.18", features = [
   "env-filter",
   "time",
   "local-time",
 ] }
-uuid = { version = "1.5.0", features = ["v4"] }
-tower = "0.4.13"
-tower-http = { version = "0.4.4", features = ["fs", "trace", "redirect"] }
+uuid = { version = "1.6.1", features = ["v4"] }
+tower = "0.5.3"
+tower-http = { version = "0.7.1", features = ["fs", "trace", "redirect"] }
 time = { version = "0.3.30", features = [
   "formatting",
   "local-offset",
   "macros",
 ] }
-pdf-extract = "0.7.2"
+pdf-extract = { git = "https://github.com/jrmuizel/pdf-extract.git", rev = "379647e" }
+
 regex = "1.10.2"
 # The profile that 'cargo dist' will build with
 [profile.dist]

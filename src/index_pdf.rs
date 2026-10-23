@@ -1,12 +1,12 @@
 use std::{error::Error, path::PathBuf};
 
 use regex::Regex;
-use tantivy::Document;
+use tantivy::TantivyDocument;
 
 use crate::index_tantivy::FileSearchIndex;
 
 pub async fn index_pdf_file(
-    file_search_index: FileSearchIndex,
+    file_search_index: &FileSearchIndex,
     path: impl Into<PathBuf>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let path = path.into();
@@ -18,13 +18,15 @@ pub async fn index_pdf_file(
     tracing::info!("indexing start for pdf {path:?}.");
     for (row, line) in regex.split(&out).enumerate() {
         let line = line.trim();
+
         if line.is_empty() {
             continue;
         }
-        let mut doc = Document::default();
+
+        let mut doc = TantivyDocument::default();
         doc.add_text(
             file_search_index.cell_position_field,
-            &format!("line {}", row + 1),
+            format!("line {}", row + 1),
         );
         doc.add_text(file_search_index.cell_value_field, line);
         doc.add_text(
@@ -46,19 +48,22 @@ mod test {
 
     use super::index_pdf_file;
     #[tokio::test]
-    #[ignore]
     async fn test_pdf() {
         let file_search_index = FileSearchIndex::new(
             &std::env::var("INDEX_DIR_PATH").unwrap_or_else(|_| "/tmp/__tantivy_data".to_string()),
             50_000_000,
         )
         .unwrap();
-        index_pdf_file(file_search_index, "test3.pdf")
+        index_pdf_file(&file_search_index, "BXLCityReportDraft3.pdf")
             .await
             .unwrap();
+
+        let res = file_search_index.find_all(0, 10).unwrap();
+        dbg!(res);
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_buggy_pdf() {
         // https://github.com/jrmuizel/pdf-extract/issues/67
         let out = pdf_extract::extract_text("dummycv.pdf").unwrap();

@@ -1,11 +1,12 @@
 use std::{error::Error, path::PathBuf, sync::Arc};
 
 use serde::Deserialize;
+use tantivy::schema::{Document, TantivyDocument};
 use tantivy::{
-    collector::TopDocs,
-    query::{FuzzyTermQuery, Query, QueryParser, RegexQuery, TermQuery},
-    schema::{Field, IndexRecordOption, NamedFieldDocument, Schema, STORED, STRING, TEXT},
     Index, IndexReader, IndexWriter, ReloadPolicy, Term,
+    collector::TopDocs,
+    query::{AllQuery, FuzzyTermQuery, Query, QueryParser, RegexQuery, TermQuery},
+    schema::{Field, IndexRecordOption, NamedFieldDocument, STORED, STRING, Schema, TEXT},
 };
 use tokio::sync::Mutex;
 
@@ -58,7 +59,7 @@ impl FileSearchIndex {
         let index_writer = Arc::new(Mutex::new(index.writer(writer_memory_arena)?)); // 50mb
         let index_reader = index
             .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommit)
+            .reload_policy(ReloadPolicy::OnCommitWithDelay)
             .try_into()?;
         Ok(FileSearchIndex {
             schema,
@@ -101,6 +102,38 @@ impl FileSearchIndex {
         };
         Ok(query)
     }
+    pub fn find_all(
+        &self,
+        page: usize,
+        per_page: usize,
+    ) -> Result<Vec<NamedFieldDocument>, Box<dyn Error>> {
+        let query = AllQuery;
+        self.search_internal(page, per_page, query)
+    }
+
+    fn search_internal(
+        &self,
+        page: usize,
+        per_page: usize,
+        query: impl Query,
+    ) -> Result<Vec<NamedFieldDocument>, Box<dyn Error>> {
+        let schema = &self.schema;
+
+        let searcher = &self.index_reader.searcher();
+        let top_docs = searcher.search(
+            &query,
+            &TopDocs::with_limit(per_page)
+                .and_offset(page * per_page)
+                .order_by_score(),
+        )?;
+        let mut docs = Vec::with_capacity(top_docs.len());
+        for (_score, doc_address) in top_docs.iter() {
+            let retrieved_doc: TantivyDocument = searcher.doc(*doc_address)?;
+            docs.push(retrieved_doc.to_named_doc(schema));
+        }
+
+        Ok(docs)
+    }
     pub fn search(
         &self,
         page: usize,
@@ -108,19 +141,8 @@ impl FileSearchIndex {
         q: &str,
         query_type: &QueryType,
     ) -> Result<Vec<NamedFieldDocument>, Box<dyn Error>> {
-        let schema = &self.schema;
         let query = self.convert_query_type_to_query(q, query_type)?;
-        let searcher = &self.index_reader.searcher();
-        let top_docs = searcher.search(
-            &query,
-            &TopDocs::with_limit(per_page).and_offset(page * per_page),
-        )?;
-        let mut docs = Vec::with_capacity(top_docs.len());
-        for (_score, doc_address) in top_docs.iter() {
-            let retrieved_doc = searcher.doc(*doc_address)?;
-            docs.push(schema.to_named_doc(&retrieved_doc));
-        }
 
-        Ok(docs)
+        self.search_internal(page, per_page, query)
     }
 }

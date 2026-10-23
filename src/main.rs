@@ -1,19 +1,19 @@
 use std::{env::var, error::Error, net::SocketAddr, path::PathBuf, str::FromStr};
 
 use axum::{
+    Json, Router,
     extract::{Query, State},
     http::StatusCode,
-    response::{ErrorResponse, IntoResponse},
+    response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
 use chrono::Local;
 use index_tantivy::QueryType;
 use serde::Deserialize;
-use time::{macros::format_description, UtcOffset};
+use time::{UtcOffset, macros::format_description};
 use tower_http::trace::{DefaultMakeSpan, TraceLayer};
 use tracing::Level;
-use tracing_subscriber::{fmt::time::OffsetTime, EnvFilter, FmtSubscriber};
+use tracing_subscriber::{EnvFilter, FmtSubscriber, fmt::time::OffsetTime};
 
 use crate::index_tantivy::FileSearchIndex;
 mod index_csv;
@@ -40,7 +40,11 @@ pub struct SearchRequest {
     q: String,
     query_type: QueryType,
 }
-
+#[derive(Deserialize)]
+pub struct FindAllRequest {
+    page: usize,
+    per_page: usize,
+}
 #[derive(Deserialize)]
 pub struct IndexRequest {
     file_path: String,
@@ -71,14 +75,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .route("/index", post(post_index))
         .route("/reindex", post(reindex_from_directory))
         .route("/search", get(get_search))
+        .route("/find-all", get(get_find_all))
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(DefaultMakeSpan::default().include_headers(true)),
         )
         .with_state(file_search_index);
-    axum::Server::bind(&addr)
-        .serve(app.into_make_service_with_connect_info::<SocketAddr>())
-        .await?;
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 pub fn setup_tracing() -> Result<(), Box<dyn Error>> {
@@ -107,17 +116,25 @@ pub fn setup_tracing() -> Result<(), Box<dyn Error>> {
 async fn get_search(
     query: Query<SearchRequest>,
     State(fsi): State<FileSearchIndex>,
-) -> axum::response::Result<impl IntoResponse> {
+) -> Result<impl IntoResponse, StatusCode> {
     let docs = fsi
         .search(query.page, query.per_page, &query.q, &query.query_type)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(docs))
 }
-
+async fn get_find_all(
+    query: Query<FindAllRequest>,
+    State(fsi): State<FileSearchIndex>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let docs = fsi
+        .find_all(query.page, query.per_page)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(docs))
+}
 async fn post_index(
     State(fsi): State<FileSearchIndex>,
     axum::extract::Json(index_request): axum::extract::Json<IndexRequest>,
-) -> axum::response::Result<impl IntoResponse> {
+) -> Result<impl IntoResponse, StatusCode> {
     let path = PathBuf::from(index_request.file_path);
     tracing::info!("getting path {path:?}");
     index_path(path, fsi).await
@@ -126,11 +143,11 @@ async fn post_index(
 async fn reindex_from_directory(
     State(fsi): State<FileSearchIndex>,
     reindex: Query<ReindexRequest>,
-) -> axum::response::Result<impl IntoResponse> {
+) -> Result<impl IntoResponse, StatusCode> {
     let path = PathBuf::from(&reindex.directory_path);
     if !path.exists() || !path.is_dir() {
         tracing::error!("path {path:?} doesn't exist or is not a directory");
-        return Err(ErrorResponse::from(StatusCode::BAD_REQUEST));
+        return Err(StatusCode::BAD_REQUEST);
     }
 
     let mut index_writer = fsi.index_writer.lock().await;
@@ -147,11 +164,11 @@ async fn reindex_from_directory(
 
     for file in path.read_dir().map_err(|e| {
         tracing::error!("could not read dir {e:?}");
-        ErrorResponse::from(StatusCode::INTERNAL_SERVER_ERROR)
+        StatusCode::INTERNAL_SERVER_ERROR
     })? {
         let file = file.map_err(|e| {
             tracing::error!("could not read file {e:?}");
-            ErrorResponse::from(StatusCode::INTERNAL_SERVER_ERROR)
+            StatusCode::INTERNAL_SERVER_ERROR
         })?;
         index_path(file.path(), fsi.clone()).await?;
     }
@@ -159,29 +176,26 @@ async fn reindex_from_directory(
     Ok(StatusCode::ACCEPTED)
 }
 
-async fn index_path(
-    path: PathBuf,
-    fsi: FileSearchIndex,
-) -> axum::response::Result<impl IntoResponse> {
+async fn index_path(path: PathBuf, fsi: FileSearchIndex) -> Result<impl IntoResponse, StatusCode> {
     match path.extension().and_then(|e| e.to_str()).ok_or_else(|| {
         tracing::error!("could not determine extension");
         StatusCode::INTERNAL_SERVER_ERROR
     })? {
         "xls" | "xlsx" if path.exists() => {
-            tokio::spawn(async move { index_xlsx::index_xlsx_file(fsi, path).await });
+            tokio::spawn(async move { index_xlsx::index_xlsx_file(&fsi, path).await });
             Ok(StatusCode::ACCEPTED)
         }
         "csv" if path.exists() => {
-            tokio::spawn(async move { index_csv::index_csv_file(fsi, path).await });
+            tokio::spawn(async move { index_csv::index_csv_file(&fsi, path).await });
             Ok(StatusCode::ACCEPTED)
         }
         "pdf" if path.exists() => {
-            tokio::spawn(async move { index_pdf::index_pdf_file(fsi, path).await });
+            tokio::spawn(async move { index_pdf::index_pdf_file(&fsi, path).await });
             Ok(StatusCode::ACCEPTED)
         }
         _ => {
             tracing::error!("{path:?} not yet supported");
-            Err(ErrorResponse::from(StatusCode::FORBIDDEN))
+            Err(StatusCode::FORBIDDEN)
         }
     }
 }
