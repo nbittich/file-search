@@ -2,7 +2,7 @@ use crate::{index_csv, index_extra, index_pdf, index_tantivy::FileSearchIndex, i
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     error::Error,
     fs,
     io::Read,
@@ -24,6 +24,7 @@ pub struct Stats {
     pub discovered: usize,
     pub indexed: usize,
     pub skipped: usize,
+    pub duplicate: usize,
     pub pending: usize,
     pub files: BTreeMap<String, Entry>,
 }
@@ -235,6 +236,7 @@ impl Ingestor {
             discovered: files.len(),
             indexed: files.values().filter(|e| e.status == "indexed").count(),
             skipped: files.values().filter(|e| e.status == "skipped").count(),
+            duplicate: files.values().filter(|e| e.status == "duplicate").count(),
             pending: files.values().filter(|e| e.status == "pending").count(),
             files,
         }
@@ -254,6 +256,7 @@ impl Ingestor {
         let mut discovered = HashSet::new();
         let mut dirs = vec![self.root.clone()];
         let mut seen_archives = HashSet::new();
+        let mut candidates: Vec<(String, String)> = Vec::new();
         while let Some(dir) = dirs.pop() {
             for item in walkdir::WalkDir::new(&dir)
                 .follow_links(false)
@@ -278,41 +281,74 @@ impl Ingestor {
                     if !seen_archives.insert(archive_key.clone()) {
                         continue;
                     }
-                    let dest = self
-                        .state
-                        .join("extracted")
-                        .join(hex::encode(Sha256::digest(archive_key.as_bytes())));
-                    if !dest.exists()
-                        && let Err(e) = unpack(path, &dest)
-                    {
-                        self.record(key, digest, "skipped", Some(e.to_string()))
-                            .await?;
-                        continue;
+                    let dest = self.state.join("extracted").join(hex::encode(Sha256::digest(archive_key.as_bytes())));
+                    if !dest.exists() {
+                        if let Err(e) = unpack(path, &dest) {
+                            self.record(key, digest, "skipped", Some(e.to_string())).await?;
+                            continue;
+                        }
                     }
                     self.record(key, digest, "indexed", None).await?;
                     dirs.push(dest);
-                    continue;
+                } else {
+                    candidates.push((key, digest));
                 }
-                if self.entries.lock().await.get(&key).is_some_and(|e| {
-                    e.digest == digest && (e.status == "indexed" || e.status == "skipped")
+            }
+        }
+
+        // Prefer original upload paths over extracted archive paths. Stable
+        // ordering ensures the same content hash keeps the same canonical file.
+        let extracted = self.state.join("extracted");
+        candidates.sort_by(|a, b| {
+            Path::new(&a.0).starts_with(&extracted)
+                .cmp(&Path::new(&b.0).starts_with(&extracted))
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        let mut canonical: HashMap<String, String> = HashMap::new();
+        for (key, digest) in candidates {
+            let previous = self.entries.lock().await.get(&key).cloned();
+            if !supported(Path::new(&key)) {
+                if previous.as_ref().is_some_and(|e| e.status == "indexed") {
+                    self.index.delete_source(&key).await?;
+                }
+                self.record(key, digest, "skipped", Some("unsupported format".into())).await?;
+                continue;
+            }
+            if let Some(source) = canonical.get(&digest) {
+                // An older scan could already have indexed this pathname.
+                if previous.as_ref().is_some_and(|e| e.status == "indexed") {
+                    self.index.delete_source(&key).await?;
+                }
+                let reason = format!("duplicate content of {source}");
+                if !previous.as_ref().is_some_and(|e| {
+                    e.digest == digest && e.status == "duplicate" && e.reason.as_deref() == Some(reason.as_str())
                 }) {
-                    continue;
+                    self.record(key, digest, "duplicate", Some(reason)).await?;
                 }
-                if !supported(path) {
-                    self.record(key, digest, "skipped", Some("unsupported format".into()))
-                        .await?;
-                    continue;
+                continue;
+            }
+            if previous.as_ref().is_some_and(|e| e.digest == digest && e.status == "indexed") {
+                canonical.insert(digest, key);
+                continue;
+            }
+            if previous.as_ref().is_some_and(|e| e.digest == digest && e.status == "skipped") {
+                continue;
+            }
+            // Remove stale chunks when the same path has changed content or
+            // when an earlier attempt left a partially indexed document.
+            if previous.is_some() {
+                self.index.delete_source(&key).await?;
+            }
+            self.record(key.clone(), digest.clone(), "pending", None).await?;
+            match self.process(PathBuf::from(&key)).await {
+                Ok(()) => {
+                    canonical.insert(digest.clone(), key.clone());
+                    self.record(key, digest, "indexed", None).await?;
                 }
-                self.record(key.clone(), digest.clone(), "pending", None)
-                    .await?;
-                let result = self.process(path.to_path_buf()).await;
-                match result {
-                    Ok(()) => self.record(key, digest, "indexed", None).await?,
-                    Err(e) => {
-                        tracing::warn!("skipping {}: {e}", path.display());
-                        self.record(key, digest, "skipped", Some(e.to_string()))
-                            .await?;
-                    }
+                Err(e) => {
+                    tracing::warn!("skipping {key}: {e}");
+                    self.index.delete_source(&key).await?;
+                    self.record(key, digest, "skipped", Some(e.to_string())).await?;
                 }
             }
         }
@@ -386,6 +422,19 @@ mod tests {
             clean_member(Path::new("safe/report.pdf")).unwrap(),
             PathBuf::from("safe/report.pdf")
         );
+    }
+    #[test]
+    fn identical_file_bytes_share_digest() {
+        let dir = std::env::temp_dir().join(format!("file-search-dedup-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("original.txt");
+        let b = dir.join("extracted.txt");
+        fs::write(&a, b"same content").unwrap();
+        fs::write(&b, b"same content").unwrap();
+        assert_eq!(fingerprint(&a).unwrap(), fingerprint(&b).unwrap());
+        fs::write(&b, b"changed content").unwrap();
+        assert_ne!(fingerprint(&a).unwrap(), fingerprint(&b).unwrap());
+        fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn identifies_compressed_formats() {

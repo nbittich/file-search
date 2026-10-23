@@ -1,7 +1,7 @@
-use std::{error::Error, path::PathBuf, sync::Arc};
+use std::{collections::HashSet, error::Error, path::PathBuf, sync::Arc};
 
 use serde::Deserialize;
-use tantivy::schema::{Document, TantivyDocument};
+use tantivy::schema::{Document, TantivyDocument, Value};
 use tantivy::{
     Index, IndexReader, IndexWriter, ReloadPolicy, Term,
     collector::TopDocs,
@@ -142,21 +142,45 @@ impl FileSearchIndex {
         per_page: usize,
         query: impl Query,
     ) -> Result<Vec<NamedFieldDocument>, Box<dyn Error>> {
-        let schema = &self.schema;
-
-        let searcher = &self.index_reader.searcher();
-        let top_docs = searcher.search(
-            &query,
-            &TopDocs::with_limit(per_page)
-                .and_offset(page * per_page)
-                .order_by_score(),
-        )?;
-        let mut docs = Vec::with_capacity(top_docs.len());
-        for (_score, doc_address) in top_docs.iter() {
-            let retrieved_doc: TantivyDocument = searcher.doc(*doc_address)?;
-            docs.push(retrieved_doc.to_named_doc(schema));
+        if per_page == 0 {
+            return Ok(Vec::new());
         }
-
+        let first = page.checked_mul(per_page).ok_or("page overflow")?;
+        let target = first.checked_add(per_page).ok_or("page overflow")?;
+        let schema = &self.schema;
+        let searcher = self.index_reader.searcher();
+        let mut seen = HashSet::new();
+        let mut docs = Vec::with_capacity(per_page);
+        let mut offset = 0usize;
+        let total = searcher.num_docs() as usize;
+        // Process matches in score order; keep the best matching chunk for
+        // each source, then paginate over DISTINCT source files.
+        while offset < total && seen.len() < target {
+            let limit = (total - offset).min(256);
+            let hits = searcher.search(
+                &query,
+                &TopDocs::with_limit(limit).and_offset(offset).order_by_score(),
+            )?;
+            if hits.is_empty() {
+                break;
+            }
+            let count = hits.len();
+            for (_score, address) in hits {
+                let document: TantivyDocument = searcher.doc(address)?;
+                let source = document
+                    .get_first(self.source_path_field)
+                    .and_then(|value| value.as_str())
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("missing-source:{}:{}", address.segment_ord, address.doc_id));
+                if seen.insert(source) && seen.len() > first {
+                    docs.push(document.to_named_doc(schema));
+                    if docs.len() == per_page {
+                        return Ok(docs);
+                    }
+                }
+            }
+            offset += count;
+        }
         Ok(docs)
     }
     pub fn search(
