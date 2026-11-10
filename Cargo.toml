@@ -1,6 +1,6 @@
 [package]
 name = "file-search"
-version = "0.2.0"
+version = "2027.0.0"
 edition = "2024"
 license = "MPL-2.0"
 authors = ["Nordine Bittich"]
