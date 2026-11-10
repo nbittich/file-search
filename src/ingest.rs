@@ -1,4 +1,9 @@
-use crate::{index_csv, index_extra, index_pdf, index_tantivy::FileSearchIndex, index_xlsx};
+use crate::{
+    index_csv, index_extra, index_pdf,
+    index_tantivy::{DocMeta, FileSearchIndex},
+    index_xlsx,
+    utils::{extension, kind_of},
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -18,7 +23,34 @@ pub struct Entry {
     pub digest: String,
     pub status: String,
     pub reason: Option<String>,
+    /// size and modification time (ms) when the digest was computed: an unchanged file isn't hashed again
+    #[serde(default)]
+    pub size: u64,
+    #[serde(default)]
+    pub modified_ms: u64,
 }
+
+/// Size and modification time of a file.
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+struct Stamp {
+    size: u64,
+    modified_ms: u64,
+}
+
+fn stamp(metadata: &fs::Metadata) -> Stamp {
+    Stamp {
+        size: metadata.len(),
+        modified_ms: metadata
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or_default(),
+    }
+}
+
+/// The ledger is saved every SAVE_EVERY records during a scan (and at its end), not after each file.
+const SAVE_EVERY: usize = 50;
 #[derive(Default, Clone, Serialize)]
 pub struct Stats {
     pub discovered: usize,
@@ -26,6 +58,8 @@ pub struct Stats {
     pub skipped: usize,
     pub duplicate: usize,
     pub pending: usize,
+    /// indexed files per kind (pdf, spreadsheet, csv, document, image, text)
+    pub kinds: BTreeMap<String, usize>,
     pub files: BTreeMap<String, Entry>,
 }
 #[derive(Clone)]
@@ -62,32 +96,7 @@ fn is_archive(path: &Path) -> bool {
         || n.ends_with(".gz")
 }
 fn supported(path: &Path) -> bool {
-    matches!(
-        path.extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase()
-            .as_str(),
-        "pdf"
-            | "xls"
-            | "xlsx"
-            | "xlsb"
-            | "ods"
-            | "csv"
-            | "txt"
-            | "md"
-            | "json"
-            | "xml"
-            | "log"
-            | "png"
-            | "jpg"
-            | "jpeg"
-            | "tif"
-            | "tiff"
-            | "docx"
-            | "odt"
-            | "doc"
-    )
+    kind_of(&extension(path)).is_some()
 }
 fn clean_member(name: &Path) -> ResultBox<PathBuf> {
     use std::path::Component;
@@ -232,14 +241,38 @@ impl Ingestor {
     }
     pub async fn stats(&self) -> Stats {
         let files = self.entries.lock().await.clone();
+        let mut kinds = BTreeMap::new();
+        for (path, _) in files.iter().filter(|(_, e)| e.status == "indexed") {
+            // archives are "indexed" too (unpacked): only the files with a kind count
+            if let Some(kind) = kind_of(&extension(Path::new(path))) {
+                *kinds.entry(kind.to_string()).or_insert(0) += 1;
+            }
+        }
         Stats {
             discovered: files.len(),
             indexed: files.values().filter(|e| e.status == "indexed").count(),
             skipped: files.values().filter(|e| e.status == "skipped").count(),
             duplicate: files.values().filter(|e| e.status == "duplicate").count(),
             pending: files.values().filter(|e| e.status == "pending").count(),
+            kinds,
             files,
         }
+    }
+
+    /// The digest of a file: the one of the ledger when its size and modification time didn't change.
+    async fn digest(&self, key: &str, path: &Path, stamp: Stamp) -> ResultBox<String> {
+        if let Some(previous) = self.entries.lock().await.get(key)
+            && !previous.digest.is_empty()
+            && previous.size == stamp.size
+            && previous.modified_ms == stamp.modified_ms
+            && stamp.modified_ms > 0
+        {
+            return Ok(previous.digest.clone());
+        }
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || fingerprint(&path))
+            .await
+            .map_err(|e| format!("hash worker failed: {e}"))?
     }
     pub async fn reset(&self) -> ResultBox<()> {
         let _scan = self.scan_lock.lock().await;
@@ -256,8 +289,13 @@ impl Ingestor {
         let mut discovered = HashSet::new();
         let mut dirs = vec![self.root.clone()];
         let mut seen_archives = HashSet::new();
-        let mut candidates: Vec<(String, String)> = Vec::new();
+        // directory of an extracted archive -> the uploaded file it comes from
+        let mut origins: HashMap<PathBuf, String> = HashMap::new();
+        // (path, digest, stamp, uploaded file it comes from when extracted)
+        let mut candidates: Vec<(String, String, Stamp, Option<String>)> = Vec::new();
+        let mut records = 0usize;
         while let Some(dir) = dirs.pop() {
+            let origin = origins.get(&dir).cloned();
             for item in walkdir::WalkDir::new(&dir)
                 .follow_links(false)
                 .into_iter()
@@ -269,7 +307,14 @@ impl Ingestor {
                 let path = item.path();
                 let key = path.to_string_lossy().to_string();
                 discovered.insert(key.clone());
-                let digest = match fingerprint(path) {
+                let file_stamp = match item.metadata() {
+                    Ok(metadata) => stamp(&metadata),
+                    Err(e) => {
+                        tracing::warn!("cannot read the metadata of {key}: {e}");
+                        continue;
+                    }
+                };
+                let digest = match self.digest(&key, path, file_stamp).await {
                     Ok(s) => s,
                     Err(e) => {
                         tracing::warn!("cannot hash {key}: {e}");
@@ -285,17 +330,25 @@ impl Ingestor {
                         .state
                         .join("extracted")
                         .join(hex::encode(Sha256::digest(archive_key.as_bytes())));
-                    if !dest.exists()
-                        && let Err(e) = unpack(path, &dest)
-                    {
-                        self.record(key, digest, "skipped", Some(e.to_string()))
-                            .await?;
-                        continue;
+                    if !dest.exists() {
+                        let (archive, target) = (path.to_path_buf(), dest.clone());
+                        let unpacked =
+                            tokio::task::spawn_blocking(move || unpack(&archive, &target))
+                                .await
+                                .map_err(|e| format!("unpack worker failed: {e}"))?;
+                        if let Err(e) = unpacked {
+                            self.record(key, digest, file_stamp, "skipped", Some(e.to_string()))
+                                .await;
+                            continue;
+                        }
                     }
-                    self.record(key, digest, "indexed", None).await?;
+                    self.record(key.clone(), digest, file_stamp, "indexed", None)
+                        .await;
+                    // a nested archive comes from the upload of its parent
+                    origins.insert(dest.clone(), origin.clone().unwrap_or(key));
                     dirs.push(dest);
                 } else {
-                    candidates.push((key, digest));
+                    candidates.push((key, digest, file_stamp, origin.clone()));
                 }
             }
         }
@@ -310,14 +363,25 @@ impl Ingestor {
                 .then_with(|| a.0.cmp(&b.0))
         });
         let mut canonical: HashMap<String, String> = HashMap::new();
-        for (key, digest) in candidates {
+        for (key, digest, file_stamp, origin) in candidates {
             let previous = self.entries.lock().await.get(&key).cloned();
             if !supported(Path::new(&key)) {
                 if previous.as_ref().is_some_and(|e| e.status == "indexed") {
                     self.index.delete_source(&key).await?;
                 }
-                self.record(key, digest, "skipped", Some("unsupported format".into()))
-                    .await?;
+                if !previous
+                    .as_ref()
+                    .is_some_and(|e| e.digest == digest && e.status == "skipped")
+                {
+                    self.record(
+                        key,
+                        digest,
+                        file_stamp,
+                        "skipped",
+                        Some("unsupported format".into()),
+                    )
+                    .await;
+                }
                 continue;
             }
             if let Some(source) = canonical.get(&digest) {
@@ -331,7 +395,8 @@ impl Ingestor {
                         && e.status == "duplicate"
                         && e.reason.as_deref() == Some(reason.as_str())
                 }) {
-                    self.record(key, digest, "duplicate", Some(reason)).await?;
+                    self.record(key, digest, file_stamp, "duplicate", Some(reason))
+                        .await;
                 }
                 continue;
             }
@@ -353,19 +418,24 @@ impl Ingestor {
             if previous.is_some() {
                 self.index.delete_source(&key).await?;
             }
-            self.record(key.clone(), digest.clone(), "pending", None)
-                .await?;
-            match self.process(PathBuf::from(&key)).await {
+            self.record(key.clone(), digest.clone(), file_stamp, "pending", None)
+                .await;
+            let origin_path = origin.as_deref().map(Path::new);
+            match self.process_with_origin(Path::new(&key), origin_path).await {
                 Ok(()) => {
                     canonical.insert(digest.clone(), key.clone());
-                    self.record(key, digest, "indexed", None).await?;
+                    self.record(key, digest, file_stamp, "indexed", None).await;
                 }
                 Err(e) => {
                     tracing::warn!("skipping {key}: {e}");
                     self.index.delete_source(&key).await?;
-                    self.record(key, digest, "skipped", Some(e.to_string()))
-                        .await?;
+                    self.record(key, digest, file_stamp, "skipped", Some(e.to_string()))
+                        .await;
                 }
+            }
+            records += 1;
+            if records % SAVE_EVERY == 0 {
+                self.save().await?;
             }
         }
         // Drop deleted source records (including old extracted files).
@@ -379,34 +449,43 @@ impl Ingestor {
         self.save().await?;
         Ok(())
     }
+
+    /// Updates the ledger in memory (saved by the scan).
     async fn record(
         &self,
         key: String,
         digest: String,
+        stamp: Stamp,
         status: &str,
         reason: Option<String>,
-    ) -> ResultBox<()> {
+    ) {
         self.entries.lock().await.insert(
             key,
             Entry {
                 digest,
                 status: status.into(),
                 reason,
+                size: stamp.size,
+                modified_ms: stamp.modified_ms,
             },
         );
-        self.save().await
     }
+
+    /// Indexes a file (`POST /index`).
     pub async fn process(&self, path: PathBuf) -> ResultBox<()> {
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        match ext.as_str() {
-            "pdf" => index_pdf::index_pdf_file(&self.index, path).await,
-            "xls" | "xlsx" | "xlsb" | "ods" => index_xlsx::index_xlsx_file(&self.index, path).await,
-            "csv" => index_csv::index_csv_file(&self.index, path).await,
-            _ => index_extra::index_extra(&self.index, path).await,
+        self.process_with_origin(&path, None).await
+    }
+
+    /// Indexes a file; `origin`: the uploaded archive it was extracted from.
+    async fn process_with_origin(&self, path: &Path, origin: Option<&Path>) -> ResultBox<()> {
+        let meta = DocMeta::of(path, origin)?;
+        match meta.extension.as_str() {
+            "pdf" => index_pdf::index_pdf_file(&self.index, path, &meta).await,
+            "xls" | "xlsx" | "xlsm" | "xlsb" | "ods" => {
+                index_xlsx::index_xlsx_file(&self.index, path, &meta).await
+            }
+            "csv" | "tsv" => index_csv::index_csv_file(&self.index, path, &meta).await,
+            _ => index_extra::index_extra(&self.index, path, &meta).await,
         }
     }
     pub fn start(self) {
@@ -452,6 +531,82 @@ mod tests {
         assert_ne!(fingerprint(&a).unwrap(), fingerprint(&b).unwrap());
         fs::remove_dir_all(dir).unwrap();
     }
+    #[tokio::test]
+    async fn uploads_are_indexed_with_their_origin() {
+        use crate::search::{SearchMode, SearchRequest, search};
+        use std::io::Write;
+
+        let dir = std::env::temp_dir().join(format!("file-search-ingest-{}", uuid::Uuid::new_v4()));
+        let uploads = dir.join("uploads");
+        fs::create_dir_all(&uploads).unwrap();
+        fs::write(uploads.join("notes.txt"), "Réunion avec le comptable").unwrap();
+        fs::write(uploads.join("export.csv"), "Client;Montant\nACME;1200\n").unwrap();
+        let zip_path = uploads.join("0c1d2e3f-1234-4abc-8def-0123456789ab.zip");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&zip_path).unwrap());
+        zip.start_file(
+            "factures/facture-octobre.txt",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(b"Facture de consultance octobre").unwrap();
+        zip.finish().unwrap();
+        fs::write(uploads.join("program.exe"), "binary").unwrap();
+
+        let index = crate::index_tantivy::test_support::temp_index();
+        let index_dir = index.index_dir.clone();
+        let ingestor =
+            Ingestor::new(index, uploads.clone(), dir.join("state"), &index_dir).unwrap();
+        ingestor.scan().await.unwrap();
+        ingestor.index.index_reader.reload().unwrap();
+
+        let stats = ingestor.stats().await;
+        assert_eq!(stats.kinds.get("text"), Some(&2));
+        assert_eq!(stats.kinds.get("csv"), Some(&1));
+        assert_eq!(stats.skipped, 1, "the exe");
+
+        let find = |q: &str| {
+            search(
+                &ingestor.index,
+                &SearchRequest {
+                    q: q.into(),
+                    mode: SearchMode::Smart,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        assert_eq!(find("reunion").hits[0].file_name, "notes.txt");
+        let csv = find("acme");
+        assert_eq!(csv.hits[0].content, "Client: ACME | Montant: 1200");
+        assert_eq!(csv.hits[0].context, vec!["Client", "Montant"]);
+        let extracted = &find("consultance").hits[0];
+        assert_eq!(extracted.file_name, "facture-octobre.txt");
+        assert_eq!(
+            extracted.origin_file_name,
+            "0c1d2e3f-1234-4abc-8def-0123456789ab.zip"
+        );
+
+        // an unchanged upload is neither hashed nor indexed again
+        let digests: Vec<(String, u64)> = ingestor
+            .entries
+            .lock()
+            .await
+            .iter()
+            .map(|(k, e)| (k.clone(), e.size))
+            .collect();
+        ingestor.scan().await.unwrap();
+        let after: Vec<(String, u64)> = ingestor
+            .entries
+            .lock()
+            .await
+            .iter()
+            .map(|(k, e)| (k.clone(), e.size))
+            .collect();
+        assert_eq!(digests, after);
+        assert!(digests.iter().all(|(_, size)| *size > 0));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn identifies_compressed_formats() {
         for name in ["a.zip", "a.tar", "a.tar.gz", "a.tgz", "a.gz"] {

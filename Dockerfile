@@ -1,9 +1,11 @@
 ## RUNTIME
-FROM alpine:3.22 AS runtime
+FROM alpine:3.23 AS runtime
 
 RUN apk add --no-cache tzdata
 RUN ln -s /usr/share/zoneinfo/Europe/Brussels /etc/localtime
-RUN apk add --no-cache ca-certificates libreoffice poppler-utils tesseract-ocr tesseract-ocr-data-eng
+# OCR of images and scanned pdfs: english, french, dutch and german (OCR_LANGUAGES)
+RUN apk add --no-cache ca-certificates libreoffice poppler-utils tesseract-ocr tesseract-ocr-data-eng \
+    tesseract-ocr-data-fra tesseract-ocr-data-nld tesseract-ocr-data-deu
 RUN apk add --no-cache \
     --repository http://dl-cdn.alpinelinux.org/alpine/edge/testing \
     --repository http://dl-cdn.alpinelinux.org/alpine/edge/main \
@@ -13,7 +15,7 @@ RUN apk add --no-cache openjdk8-jre imagemagick ghostscript
 RUN sed -i 's/pattern="{GIF,JPEG,PNG,WEBP}"/pattern="{GIF,JPEG,PNG,WEBP,PDF}"/' /etc/ImageMagick-7/policy.xml
 
 ## INITIAL BUILDER
-FROM rust:1.99-alpine3.22 AS builder
+FROM rust:1.99-alpine3.23 AS builder
 RUN apk add --no-cache openssl-dev curl build-base cmake pkgconfig musl-dev openssl-libs-static perl \
     && apk add --no-cache \
     --repository http://dl-cdn.alpinelinux.org/alpine/edge/testing \
@@ -44,6 +46,8 @@ COPY --from=build /app/target/release/file-search /file-search
 ENV UPLOAD_DIR=/uploads
 ENV INGEST_STATE_DIR=/app/state
 ENV UPLOAD_SCAN_INTERVAL_SECS=10
+ENV OCR_LANGUAGES=eng+fra+nld+deu
+ENV OCR_MAX_PDF_PAGES=30
 ENV RUST_LOG=INFO
 ENV LD_PRELOAD=/usr/lib/libtcmalloc.so
 ENV TCMALLOC_AGGRESSIVE_DECOMMIT=t

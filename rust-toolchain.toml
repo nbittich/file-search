@@ -1,4 +1,5 @@
 [toolchain]
-channel = "stable"
-host = "1.99.1"
+# same version as the docker build (rust:1.99-alpine)
+channel = "1.99"
+components = ["rustfmt"]
 targets = ["x86_64-unknown-linux-gnu"]

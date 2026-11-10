@@ -1,155 +1,174 @@
-use std::{error::Error, path::PathBuf};
+use std::{error::Error, path::Path};
 
-use calamine::{Data, Reader, open_workbook_auto};
+use calamine::{Data, DataType, Reader, open_workbook_auto};
 use tantivy::TantivyDocument;
 
-use crate::{index_tantivy::FileSearchIndex, utils::convert_row_column_to_letter};
+use crate::{
+    index_tantivy::{DocMeta, FileSearchIndex},
+    utils::convert_row_column_to_letter,
+};
+
+type ResultBox<T> = Result<T, Box<dyn Error + Send + Sync>>;
+
+/// The text of a cell: dates as dd/mm/yyyy (not the excel serial number), integers without ".0".
+pub fn cell_text(cell: &Data) -> String {
+    match cell {
+        Data::Empty => String::new(),
+        Data::Float(f) if f.fract() == 0.0 && f.abs() < 1e15 => format!("{}", *f as i64),
+        Data::DateTime(d) if d.is_duration() => cell.to_string(),
+        Data::DateTime(_) | Data::DateTimeIso(_) => match cell.as_datetime() {
+            Some(dt) if dt.time() == chrono::NaiveTime::MIN => dt.format("%d/%m/%Y").to_string(),
+            Some(dt) => dt.format("%d/%m/%Y %H:%M").to_string(),
+            None => cell.to_string(),
+        },
+        _ => cell.to_string(),
+    }
+    .trim()
+    .to_string()
+}
+
+/// The document of a row: its cells "label: value" (the label of the column from the first row; the first row
+/// itself as is), positions and labels. `None` for an empty row.
+pub fn add_row(
+    index: &FileSearchIndex,
+    meta: &DocMeta,
+    sheet_name: &str,
+    labels: &[String],
+    row_idx: usize,
+    cells: &[String],
+) -> Option<TantivyDocument> {
+    if cells.iter().all(|c| c.is_empty()) {
+        return None;
+    }
+    let mut doc = index.new_doc(meta);
+    doc.add_text(index.sheet_name_field, sheet_name);
+    for (column, cell) in cells.iter().enumerate() {
+        if cell.is_empty() {
+            continue;
+        }
+        doc.add_text(
+            index.cell_position_field,
+            convert_row_column_to_letter(row_idx, column),
+        );
+        let label = labels.get(column).filter(|l| !l.is_empty() && row_idx > 0);
+        match label {
+            Some(label) => {
+                doc.add_text(index.cell_ctx_field, label);
+                doc.add_text(index.cell_value_field, format!("{label}: {cell}"));
+            }
+            None => doc.add_text(index.cell_value_field, cell),
+        }
+    }
+    Some(doc)
+}
 
 pub async fn index_xlsx_file(
     file_search_index: &FileSearchIndex,
-    path_to_xlsx: impl Into<PathBuf>,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let path_to_xlsx = path_to_xlsx.into();
-    let mut workbook = open_workbook_auto(&path_to_xlsx)?;
-    let sheets = workbook.sheet_names().to_owned();
+    path: &Path,
+    meta: &DocMeta,
+) -> ResultBox<()> {
+    let owned = path.to_path_buf();
+    // a big workbook takes a while to read: not on an async worker
+    let sheets =
+        tokio::task::spawn_blocking(move || -> ResultBox<Vec<(String, Vec<Vec<String>>)>> {
+            let mut workbook = open_workbook_auto(&owned)?;
+            let mut sheets = Vec::new();
+            for sheet_name in workbook.sheet_names().to_owned() {
+                match workbook.worksheet_range(&sheet_name) {
+                    Ok(range) => sheets.push((
+                        sheet_name,
+                        range
+                            .rows()
+                            .map(|row| row.iter().map(cell_text).collect())
+                            .collect(),
+                    )),
+                    Err(e) => tracing::warn!("sheet {sheet_name} of {owned:?} not readable: {e}"),
+                }
+            }
+            Ok(sheets)
+        })
+        .await
+        .map_err(|e| format!("workbook worker failed: {e}"))??;
 
     let mut index_writer = file_search_index.index_writer.lock().await;
     index_writer.delete_term(tantivy::Term::from_field_text(
         file_search_index.source_path_field,
-        &path_to_xlsx.to_string_lossy(),
+        &meta.source_path,
     ));
-    for sheet_name in sheets {
-        if let Ok(range) = workbook.worksheet_range(&sheet_name) {
-            tracing::info!("indexing start for sheet {sheet_name}.");
-            if range.rows().len() < 1 {
-                tracing::info!("not enough row to index...");
-                continue;
-            }
-            // extract labels
-            let labels = range
-                .rows()
-                .take(1)
-                .flat_map(|r| r.iter())
-                .map(|c| c.to_string())
-                .collect::<Vec<String>>();
-
-            for (row_idx, row) in range.rows().enumerate() {
-                if row.iter().all(|c| c == &Data::Empty) {
-                    continue;
-                }
-                let mut doc = TantivyDocument::default();
-                doc.add_text(
-                    file_search_index.file_name_field,
-                    path_to_xlsx
-                        .file_name()
-                        .ok_or("file not found")?
-                        .to_string_lossy(),
-                );
-                doc.add_text(file_search_index.sheet_name_field, &sheet_name);
-                doc.add_text(
-                    file_search_index.source_path_field,
-                    path_to_xlsx.to_string_lossy(),
-                );
-                for (column, cell) in row.iter().enumerate() {
-                    if &Data::Empty == cell {
-                        continue;
-                    }
-                    doc.add_text(
-                        file_search_index.cell_position_field,
-                        convert_row_column_to_letter(row_idx, column),
-                    );
-                    if let Some(label) = labels.get(column) {
-                        doc.add_text(file_search_index.cell_ctx_field, label);
-                        doc.add_text(
-                            file_search_index.cell_value_field,
-                            format!("{label}: {}", cell),
-                        );
-                    }
-                    doc.add_text(file_search_index.cell_value_field, cell.to_string());
-                }
-
+    for (sheet_name, rows) in sheets {
+        let Some(labels) = rows.first().cloned() else {
+            continue;
+        };
+        for (row_idx, row) in rows.iter().enumerate() {
+            if let Some(doc) = add_row(file_search_index, meta, &sheet_name, &labels, row_idx, row)
+            {
                 index_writer.add_document(doc)?;
             }
-            tracing::info!("indexing done.");
         }
     }
     index_writer.commit()?;
+    tracing::info!("indexing of {} done.", meta.source_path);
 
     Ok(())
 }
 
 #[cfg(test)]
 mod test {
-    use tantivy::{
-        Document, TantivyDocument,
-        collector::TopDocs,
-        query::{QueryParser, RegexQuery},
-    };
+    use calamine::{Data, ExcelDateTime, ExcelDateTimeType};
+    use tantivy::schema::Value;
 
-    use crate::{index_tantivy::FileSearchIndex, index_xlsx::convert_row_column_to_letter};
+    use super::{add_row, cell_text};
+    use crate::index_tantivy::{DocMeta, test_support::temp_index};
 
-    use super::index_xlsx_file;
-
-    #[tokio::test]
-    #[ignore]
-    async fn test_xlsx() {
-        let file_search_index = FileSearchIndex::new(
-            &std::env::var("INDEX_DIR_PATH").unwrap_or_else(|_| "/tmp/__tantivy_data".to_string()),
-            50_000_000,
-        )
-        .unwrap();
-        index_xlsx_file(&file_search_index, "test2.xlsx")
-            .await
-            .unwrap();
-    }
     #[test]
-    #[ignore]
-    fn test_read_idx() {
-        let file_search_index = FileSearchIndex::new(
-            &std::env::var("INDEX_DIR_PATH").unwrap_or_else(|_| "/tmp/__tantivy_data".to_string()),
-            50_000_000,
-        )
-        .unwrap();
-
-        let searcher = file_search_index.index_reader.searcher();
-        println!("num docs: {}", searcher.num_docs());
-        let schema = file_search_index.schema;
-
-        let regex_query =
-            RegexQuery::from_pattern("(?i)sango.*", file_search_index.cell_value_field).unwrap();
-        let top_docs = searcher
-            .search(&regex_query, &TopDocs::with_limit(10).order_by_score())
-            .unwrap();
-        assert_eq!(2, top_docs.len());
-        for (_score, doc_address) in top_docs {
-            let retrieved_doc: TantivyDocument = searcher.doc(doc_address).unwrap();
-            println!("{}", retrieved_doc.to_json(&schema))
-        }
-
-        let query_parser = QueryParser::for_index(
-            &file_search_index.index,
-            vec![file_search_index.cell_value_field],
+    fn cells() {
+        assert_eq!(cell_text(&Data::Float(1200.0)), "1200");
+        assert_eq!(cell_text(&Data::Float(12.5)), "12.5");
+        assert_eq!(cell_text(&Data::String(" ACME ".into())), "ACME");
+        assert_eq!(cell_text(&Data::Empty), "");
+        // 46000 = 2025-12-09 in excel
+        let date = Data::DateTime(ExcelDateTime::new(
+            46000.0,
+            ExcelDateTimeType::DateTime,
+            false,
+        ));
+        assert_eq!(cell_text(&date), "09/12/2025");
+        assert_eq!(
+            cell_text(&Data::DateTimeIso("2026-10-05T14:30:00".into())),
+            "05/10/2026 14:30"
         );
-        let query = query_parser
-            .parse_query("\"Regionally membership\"~1")
-            .unwrap();
-        let top_docs = searcher
-            .search(&query, &TopDocs::with_limit(10).order_by_score())
-            .unwrap();
-        for (_score, doc_address) in top_docs.iter() {
-            let retrieved_doc: TantivyDocument = searcher.doc(*doc_address).unwrap();
-            println!("{}", retrieved_doc.to_json(&schema))
-        }
-        assert_eq!(1, top_docs.len());
-
-        assert!(searcher.num_docs() > 0);
     }
 
     #[test]
-    #[ignore]
-    fn test_convert_row_column_to_letter() {
-        assert_eq!(convert_row_column_to_letter(61, 8), "I62".to_string());
-        assert_eq!(convert_row_column_to_letter(56, 132), "EC57".to_string());
-        assert_eq!(convert_row_column_to_letter(14, 91), "CN15".to_string());
+    fn rows_have_labels() {
+        let index = temp_index();
+        let meta = DocMeta {
+            source_path: "/uploads/a.xlsx".into(),
+            origin_path: "/uploads/a.xlsx".into(),
+            file_name: "a.xlsx".into(),
+            kind: "spreadsheet",
+            extension: "xlsx".into(),
+            modified_at: None,
+        };
+        let labels = vec!["Client".to_string(), "Amount".to_string()];
+        let header = add_row(&index, &meta, "S1", &labels, 0, &labels).unwrap();
+        let values: Vec<&str> = header
+            .get_all(index.cell_value_field)
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert_eq!(values, vec!["Client", "Amount"]);
+
+        let row = add_row(&index, &meta, "S1", &labels, 1, &["ACME".into(), "".into()]).unwrap();
+        let values: Vec<&str> = row
+            .get_all(index.cell_value_field)
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert_eq!(values, vec!["Client: ACME"]);
+        let positions: Vec<&str> = row
+            .get_all(index.cell_position_field)
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert_eq!(positions, vec!["A2"]);
+        assert!(add_row(&index, &meta, "S1", &labels, 2, &["".into(), "".into()]).is_none());
     }
 }

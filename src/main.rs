@@ -22,6 +22,8 @@ mod index_pdf;
 mod index_tantivy;
 mod index_xlsx;
 mod ingest;
+mod ocr;
+mod search;
 mod utils;
 
 pub static CORS_ALLOW_ORIGIN: &str = "CORS_ALLOW_ORIGIN";
@@ -73,11 +75,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let upload_root = var("UPLOAD_DIR").unwrap_or_else(|_| "/tmp/uploads".to_string());
     let state_dir = var("INGEST_STATE_DIR").unwrap_or_else(|_| "/tmp/app/state".to_string());
+    let index_dir = file_search_index.index_dir.clone();
     let ingestor = ingest::Ingestor::new(
         file_search_index.clone(),
         PathBuf::from(upload_root),
         PathBuf::from(state_dir),
-        &PathBuf::from(var(INDEX_DIR_PATH).unwrap_or_else(|_| "/tmp/__tantivy_data".into())),
+        &index_dir,
     )
     .map_err(|e| format!("{e}"))?;
     let shared = ingestor.clone();
@@ -88,6 +91,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .route("/index", post(post_index))
         .route("/reindex", post(reindex_from_directory))
         .route("/search", get(get_search))
+        .route("/v2/search", get(get_search_v2))
         .route("/find-all", get(get_find_all))
         .route("/stats", get(get_stats))
         .route("/reset", post(reset_index))
@@ -137,6 +141,31 @@ async fn get_search(
         .search(query.page, query.per_page, &query.q, &query.query_type)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(docs))
+}
+/// The search with modes, fields and filters (see `search::SearchRequest`).
+async fn get_search_v2(
+    Query(request): Query<search::SearchRequest>,
+    State(ingestor): State<ingest::Ingestor>,
+) -> axum::response::Response {
+    let index = ingestor.index.clone();
+    // a search reads segments and runs automatons: not on an async worker
+    let result = tokio::task::spawn_blocking(move || search::search(&index, &request)).await;
+    match result {
+        Ok(Ok(response)) => Json(response).into_response(),
+        Ok(Err(search::SearchError::BadRequest(message))) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": message })),
+        )
+            .into_response(),
+        Ok(Err(e)) => {
+            tracing::error!("search failed: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(e) => {
+            tracing::error!("search worker failed: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }
 async fn get_find_all(
     query: Query<FindAllRequest>,
